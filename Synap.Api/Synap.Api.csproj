@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- No Microsoft.AspNetCore.OpenApi: SergioIzq.AspNetCore.Kernel brings Swashbuckle-based Swagger (AddKernelSwagger) instead. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="SergioIzq.AspNetCore.Kernel" Version="0.2.6" />
+    <PackageReference Include="SergioIzq.Logging.HtmlFile" Version="0.2.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Synap.Application\Synap.Application.csproj" />
+    <ProjectReference Include="..\Synap.Infrastructure\Synap.Infrastructure.csproj" />
+    <ProjectReference Include="..\Synap.Shared.Application\Synap.Shared.Application.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="Synap.Api/Synap.Api.csproj" />
+  <Project Path="Synap.Application/Synap.Application.csproj" />
+  <Project Path="Synap.Domain/Synap.Domain.csproj" />
+  <Project Path="Synap.Infrastructure/Synap.Infrastructure.csproj" />
+  <Project Path="Synap.Shared.Application/Synap.Shared.Application.csproj" />
+  <Project Path="Synap.Shared.Domain/Synap.Shared.Domain.csproj" />
+</Solution>

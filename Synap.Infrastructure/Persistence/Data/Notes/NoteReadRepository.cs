@@ -28,7 +28,9 @@ public sealed class NoteReadRepository : INoteReadRepository
 
         const string notesSql = """
             SELECT n.id AS Id, n.title AS Title, n.content AS Content, n.note_type AS Type,
-                   n.created_at AS CreatedAt, n.updated_at AS UpdatedAt
+                   n.created_at AS CreatedAt, n.updated_at AS UpdatedAt,
+                   n.metadata_title AS MetadataTitle, n.metadata_description AS MetadataDescription,
+                   n.metadata_image_url AS MetadataImageUrl
             FROM notes n
             WHERE n.user_id = @UserId
               AND (@SearchTerm IS NULL OR to_tsvector('english', coalesce(n.title, '') || ' ' || n.content)
@@ -79,11 +81,16 @@ public sealed class NoteReadRepository : INoteReadRepository
                 Enum.Parse<NoteType>(r.Type),
                 r.CreatedAt,
                 r.UpdatedAt,
-                tagsByNoteId.GetValueOrDefault(r.Id, [])))
+                tagsByNoteId.GetValueOrDefault(r.Id, []),
+                r.MetadataTitle,
+                r.MetadataDescription,
+                r.MetadataImageUrl))
             .ToList();
     }
 
-    private sealed record NoteRow(Guid Id, string? Title, string Content, string Type, DateTime CreatedAt, DateTime UpdatedAt);
+    private sealed record NoteRow(
+        Guid Id, string? Title, string Content, string Type, DateTime CreatedAt, DateTime UpdatedAt,
+        string? MetadataTitle, string? MetadataDescription, string? MetadataImageUrl);
 
     private sealed record NoteTagRow(Guid NoteId, string Name);
 }

@@ -9,4 +9,7 @@ public sealed record NoteSearchResult(
     NoteType Type,
     DateTime CreatedAt,
     DateTime UpdatedAt,
-    IReadOnlyList<string> Tags);
+    IReadOnlyList<string> Tags,
+    string? MetadataTitle,
+    string? MetadataDescription,
+    string? MetadataImageUrl);

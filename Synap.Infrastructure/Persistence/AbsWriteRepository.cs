@@ -21,8 +21,13 @@ public abstract class AbsWriteRepository<TEntity, TId> : IWriteRepository<TEntit
         Context = context;
     }
 
+    // Explicitly tracked regardless of the DbContext's configured default tracking behavior
+    // (Production defaults to NoTracking for plain reads - see Infrastructure/DependencyInjection.cs):
+    // callers fetch through the write side specifically to mutate and save, and relying on
+    // disconnected-graph Update() semantics for entities with collection navigations (Note.Tags)
+    // is a well-known EF Core footgun.
     public Task<TEntity?> GetByIdAsync(Guid id, CancellationToken cancellationToken)
-        => Context.Set<TEntity>().FirstOrDefaultAsync(entity => entity.Id.Value == id, cancellationToken);
+        => Context.Set<TEntity>().AsTracking().FirstOrDefaultAsync(entity => entity.Id.Value == id, cancellationToken);
 
     public void Add(TEntity entity) => Context.Set<TEntity>().Add(entity);
 

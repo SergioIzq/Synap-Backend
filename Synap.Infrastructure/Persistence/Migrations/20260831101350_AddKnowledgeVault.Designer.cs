@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Synap.Infrastructure.Persistence.Command;
@@ -11,9 +12,11 @@ using Synap.Infrastructure.Persistence.Command;
 namespace Synap.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(SynapDbContext))]
-    partial class SynapDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260831101350_AddKnowledgeVault")]
+    partial class AddKnowledgeVault
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

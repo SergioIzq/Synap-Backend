@@ -34,6 +34,12 @@ try
     builder.Services.AddKernelCors("synap.sergioizq.com");
     builder.Services.AddKernelJsonOptions();
     builder.Services.AddKernelControllers();
+
+    // Enums as strings ("text"/"codeSnippet"/"bookmark"), not raw numbers - additive to
+    // whatever AddKernelControllers/AddKernelJsonOptions already configured.
+    builder.Services.Configure<Microsoft.AspNetCore.Mvc.JsonOptions>(options =>
+        options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter(System.Text.Json.JsonNamingPolicy.CamelCase)));
+
     builder.Services.AddKernelModelValidation();
     builder.Services.AddKernelSwagger();
     builder.Services.AddKernelResponseCompression();

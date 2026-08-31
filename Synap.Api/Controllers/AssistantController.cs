@@ -1,5 +1,6 @@
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SergioIzq.AspNetCore.Kernel.Controllers;
 using Synap.Application.Features.Assistant.Queries;
 
@@ -14,6 +15,7 @@ public class AssistantController : AbsController
     }
 
     [HttpPost("ask")]
+    [EnableRateLimiting(RateLimitPolicies.AiHeavy)]
     public async Task<IActionResult> Ask([FromBody] AskRequest request)
         => await SendAndHandleAsync(new AskAssistantQuery(request.Question));
 

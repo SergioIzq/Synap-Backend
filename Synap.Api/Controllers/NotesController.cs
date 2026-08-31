@@ -1,5 +1,6 @@
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SergioIzq.AspNetCore.Kernel.Controllers;
 using Synap.Application.Features.Notes.Commands.AddTag;
 using Synap.Application.Features.Notes.Commands.Create;
@@ -50,6 +51,7 @@ public class NotesController : AbsController
 
     /// <summary>Used by the iOS Shortcut, authenticated with the personal access token (design.md Decision 3).</summary>
     [HttpPost("quick-capture")]
+    [EnableRateLimiting(RateLimitPolicies.AiHeavy)]
     public async Task<IActionResult> QuickCapture([FromBody] QuickCaptureCommand command)
         => await SendAndHandleAsync(command);
 

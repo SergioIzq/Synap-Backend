@@ -3,6 +3,8 @@
   <Project Path="Synap.Application/Synap.Application.csproj" />
   <Project Path="Synap.Domain/Synap.Domain.csproj" />
   <Project Path="Synap.Infrastructure/Synap.Infrastructure.csproj" />
+  <Project Path="Synap.IntegrationTests/Synap.IntegrationTests.csproj" />
   <Project Path="Synap.Shared.Application/Synap.Shared.Application.csproj" />
   <Project Path="Synap.Shared.Domain/Synap.Shared.Domain.csproj" />
+  <Project Path="Synap.UnitTests/Synap.UnitTests.csproj" />
 </Solution>

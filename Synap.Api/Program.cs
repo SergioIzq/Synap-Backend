@@ -1,15 +1,18 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 using SergioIzq.AspNetCore.Kernel.DependencyInjection;
 using SergioIzq.AspNetCore.Kernel.Middleware;
 using SergioIzq.Logging.HtmlFile;
 using Serilog;
+using Synap.Api;
 using Synap.Api.Authentication;
 using Synap.Api.Middleware;
 using Synap.Application;
 using Synap.Infrastructure;
 using Synap.Shared.Application;
+using System.Threading.RateLimiting;
 
 const string ApiTokenSchemeName = "ApiToken";
 const string SmartBearerSchemeName = "SmartBearer";
@@ -96,6 +99,30 @@ try
             .Build();
     });
 
+    // Per-user limit on the AI-heavy endpoints only (quick-capture triggers an embedding job;
+    // the assistant chat calls an external LLM) - open registration means anyone with the link
+    // can create an account, and this is what keeps one user from starving the shared VPS or
+    // burning through the external LLM's free-tier quota (design.md Risks, specs/ai-assistant).
+    // Numbers are a conservative starting point, not tuned against real usage yet (design.md
+    // Open Questions) - partitioned by user ID from the JWT/API-token claims, not IP, since the
+    // concern is per-account abuse, not per-network.
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+        options.AddPolicy(RateLimitPolicies.AiHeavy, httpContext =>
+        {
+            var userId = httpContext.User.FindFirst("sub")?.Value ?? "anonymous";
+
+            return RateLimitPartition.GetFixedWindowLimiter(userId, _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 20,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+            });
+        });
+    });
+
     var app = builder.Build();
 
     app.UseSerilogRequestLogging();
@@ -106,6 +133,8 @@ try
     app.UseMiddleware<ExceptionHandlingMiddleware>();
     app.UseResultHandler();
     app.UseNoCache();
+
+    app.UseRateLimiter();
 
     app.UseCors(app.Environment.IsDevelopment() ? "LocalhostPolicy" : "ProductionPolicy");
 

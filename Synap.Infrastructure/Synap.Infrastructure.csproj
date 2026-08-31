@@ -9,6 +9,7 @@
     <PackageReference Include="Dapper" Version="2.1.79" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="SergioIzq.AspNetCore.Kernel" Version="0.2.6" />
   </ItemGroup>
 
   <PropertyGroup>

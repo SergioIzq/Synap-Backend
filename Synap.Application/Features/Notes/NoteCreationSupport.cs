@@ -30,6 +30,8 @@ internal static class NoteCreationSupport
             EnqueueMetadataScrape(backgroundJobQueue, note.Id.Value, content);
         }
 
+        EmbeddingSupport.EnqueueGeneration(backgroundJobQueue, note.Id.Value, userId, content);
+
         return note;
     }
 

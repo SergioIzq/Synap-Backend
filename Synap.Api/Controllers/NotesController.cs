@@ -44,6 +44,10 @@ public class NotesController : AbsController
     public async Task<IActionResult> Search([FromQuery] string? q, [FromQuery] string? tag)
         => await SendAndHandleAsync(new SearchNotesQuery(q, tag));
 
+    [HttpGet("{id:guid}/related")]
+    public async Task<IActionResult> GetRelated(Guid id)
+        => await SendAndHandleAsync(new GetRelatedNotesQuery(id));
+
     /// <summary>Used by the iOS Shortcut, authenticated with the personal access token (design.md Decision 3).</summary>
     [HttpPost("quick-capture")]
     public async Task<IActionResult> QuickCapture([FromBody] QuickCaptureCommand command)

@@ -10,6 +10,7 @@ using Synap.Infrastructure.Persistence.Command;
 using Synap.Infrastructure.Persistence.Data.Notes;
 using Synap.Infrastructure.Persistence.Data.Tags;
 using Synap.Infrastructure.Persistence.Data.Users;
+using Synap.Infrastructure.Services.Ai;
 using Synap.Infrastructure.Services.Auth;
 using Synap.Infrastructure.Services.Bookmarks;
 using Synap.Shared.Application.BackgroundJobs;
@@ -64,6 +65,18 @@ public static class DependencyInjection
         {
             client.Timeout = TimeSpan.FromSeconds(10);
             client.DefaultRequestHeaders.UserAgent.ParseAdd("SynapBot/1.0 (+https://synap.sergioizq.com)");
+        });
+
+        services.AddHttpClient<IAiServiceClient, AiServiceClient>(client =>
+        {
+            var baseUrl = configuration["AiService:BaseUrl"]
+                ?? throw new InvalidOperationException("Missing 'AiService:BaseUrl' configuration.");
+            var internalApiKey = configuration["AiService:InternalApiKey"]
+                ?? throw new InvalidOperationException("Missing 'AiService:InternalApiKey' configuration.");
+
+            client.BaseAddress = new Uri(baseUrl);
+            client.Timeout = TimeSpan.FromSeconds(25); // generous: a Groq round trip can take a few seconds.
+            client.DefaultRequestHeaders.Add("X-Internal-Api-Key", internalApiKey);
         });
 
         // Web-layer kernel services that are provider-agnostic (unlike

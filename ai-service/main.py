@@ -1,10 +1,23 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
-from app.api import health
+from app.api import assistant, embeddings, health, notes
+from app.core.db import close_pool, init_pool
+from app.embeddings.model import get_embedding_model
 
-# Embeddings (task 4.1), the async embedding pipeline (task 4.3), semantic
-# related-notes (task 4.4), RAG retrieval (task 4.5) and the external LLM
-# provider (task 4.6) are wired in as the AI Assistant capability is built.
-app = FastAPI(title="Synap AI Service")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_pool()
+    get_embedding_model()  # preload at startup: fail fast, and the first real request isn't slow.
+    yield
+    await close_pool()
+
+
+app = FastAPI(title="Synap AI Service", lifespan=lifespan)
 
 app.include_router(health.router)
+app.include_router(embeddings.router)
+app.include_router(notes.router)
+app.include_router(assistant.router)

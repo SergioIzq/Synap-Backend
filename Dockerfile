@@ -2,8 +2,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-# Copiar los archivos de solución y proyectos
-COPY Synap.slnx ./
+# Copiar los archivos de proyecto (sin la solución para no arrastrar los test projects)
 COPY Synap.Api/Synap.Api.csproj Synap.Api/
 COPY Synap.Application/Synap.Application.csproj Synap.Application/
 COPY Synap.Domain/Synap.Domain.csproj Synap.Domain/
@@ -12,7 +11,7 @@ COPY Synap.Shared.Application/Synap.Shared.Application.csproj Synap.Shared.Appli
 COPY Synap.Shared.Domain/Synap.Shared.Domain.csproj Synap.Shared.Domain/
 
 # Restaurar dependencias
-RUN dotnet restore
+RUN dotnet restore Synap.Api/Synap.Api.csproj
 
 # Copiar el resto del código fuente
 COPY . .

@@ -10,6 +10,7 @@ using Synap.Api;
 using Synap.Api.Authentication;
 using Synap.Api.Middleware;
 using Synap.Application;
+using Microsoft.EntityFrameworkCore;
 using Synap.Infrastructure;
 using Synap.Infrastructure.Persistence.Command;
 using Synap.Shared.Application;

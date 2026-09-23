@@ -11,6 +11,7 @@ using Synap.Api.Authentication;
 using Synap.Api.Middleware;
 using Synap.Application;
 using Synap.Infrastructure;
+using Synap.Infrastructure.Persistence.Command;
 using Synap.Shared.Application;
 using System.Threading.RateLimiting;
 
@@ -124,6 +125,12 @@ try
     });
 
     var app = builder.Build();
+
+    using (var scope = app.Services.CreateScope())
+    {
+        var db = scope.ServiceProvider.GetRequiredService<SynapDbContext>();
+        db.Database.Migrate();
+    }
 
     app.UseSerilogRequestLogging();
 

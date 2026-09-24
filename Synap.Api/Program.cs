@@ -87,6 +87,8 @@ try
         options.DefaultChallengeScheme = SmartBearerSchemeName;
     });
 
+    builder.Services.AddHealthChecks();
+
     // Every endpoint requires authentication unless explicitly [AllowAnonymous] (register/login
     // today; knowledge-vault and ai-assistant controllers land already covered by this default -
     // see specs/identity "Authenticated access to the vault").

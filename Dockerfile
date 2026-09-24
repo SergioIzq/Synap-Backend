@@ -27,7 +27,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
 EXPOSE 80
 
-RUN apt-get update && apt-get install -y --no-install-recommends libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libgssapi-krb5-2 wget && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /app/logs && chmod 777 /app/logs
 

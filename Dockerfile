@@ -34,6 +34,6 @@ RUN mkdir -p /app/logs && chmod 777 /app/logs
 COPY --from=publish /app/publish .
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl --fail http://localhost/health || exit 1
+    CMD wget --quiet --tries=1 --spider http://localhost/health || exit 1
 
 ENTRYPOINT ["dotnet", "Synap.Api.dll"]

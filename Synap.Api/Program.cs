@@ -155,7 +155,7 @@ try
     app.UseAuthorization();
 
     app.MapControllers();
-    app.MapHealthChecks("/health");
+    app.MapHealthChecks("/health").AllowAnonymous();
 
     app.MapGet("/", () => Results.Redirect("/swagger"));
 

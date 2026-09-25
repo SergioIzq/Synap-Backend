@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Synap.Domain;
 using Synap.Shared.Application.Interfaces;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Synap.Infrastructure.Services.Ai;
@@ -58,13 +59,13 @@ public sealed class AiServiceClient : IAiServiceClient
         }
     }
 
-    public async Task<AssistantAnswer> AskAsync(Guid userId, string question, CancellationToken cancellationToken = default)
+    public async Task<AssistantAnswer> AskAsync(Guid userId, string question, string groqApiKey, string? groqModel, CancellationToken cancellationToken = default)
     {
         try
         {
             using var response = await _httpClient.PostAsJsonAsync(
                 "/internal/assistant/ask",
-                new AskRequest(userId, question),
+                new AskRequest(userId, question, groqApiKey, groqModel),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -72,14 +73,57 @@ public sealed class AiServiceClient : IAiServiceClient
             var result = await response.Content.ReadFromJsonAsync<AskResponse>(cancellationToken)
                 ?? throw new InvalidOperationException("Empty response from AI service.");
 
-            return new AssistantAnswer(result.Answer, result.SourceNoteIds, result.Grounded);
+            return new AssistantAnswer(result.Answer, result.SourceNoteIds, result.Grounded, ParseAnswerStatus(result.Status));
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
         {
+            // Only the user ID is logged - never the request body, which carries the user's key.
             _logger.LogWarning(ex, "AI service unavailable while answering a question for user {UserId}", userId);
-            return new AssistantAnswer("The assistant is temporarily unavailable - please try again shortly.", [], false);
+            return AssistantAnswer.Failed(AssistantAnswer.UnavailableMessage, AssistantAnswerStatus.Unavailable);
         }
     }
+
+    public async Task<LlmModelsResult> ListModelsAsync(string groqApiKey, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var response = await _httpClient.PostAsJsonAsync(
+                "/internal/llm/models",
+                new ListModelsRequest(groqApiKey),
+                cancellationToken);
+
+            response.EnsureSuccessStatusCode();
+
+            var result = await response.Content.ReadFromJsonAsync<ListModelsResponse>(cancellationToken)
+                ?? throw new InvalidOperationException("Empty response from AI service.");
+
+            var status = result.Status switch
+            {
+                "ok" => LlmKeyStatus.Ok,
+                "invalid_key" => LlmKeyStatus.InvalidKey,
+                "rate_limited" => LlmKeyStatus.RateLimited,
+                _ => LlmKeyStatus.Unavailable,
+            };
+
+            return new LlmModelsResult(status, status == LlmKeyStatus.Ok ? result.Models : []);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+        {
+            _logger.LogWarning(ex, "AI service unavailable while listing LLM models");
+            return LlmModelsResult.Failed(LlmKeyStatus.Unavailable);
+        }
+    }
+
+    // Python sends snake_case statuses; anything unrecognised is treated as unavailable rather
+    // than trusted as a real answer.
+    private static AssistantAnswerStatus ParseAnswerStatus(string? status) => status switch
+    {
+        "ok" => AssistantAnswerStatus.Ok,
+        "no_relevant_notes" => AssistantAnswerStatus.NoRelevantNotes,
+        "invalid_key" => AssistantAnswerStatus.InvalidKey,
+        "rate_limited" => AssistantAnswerStatus.RateLimited,
+        _ => AssistantAnswerStatus.Unavailable,
+    };
 
     private sealed record GenerateEmbeddingRequest(
         [property: JsonPropertyName("note_id")] Guid NoteId,
@@ -95,10 +139,20 @@ public sealed class AiServiceClient : IAiServiceClient
 
     private sealed record AskRequest(
         [property: JsonPropertyName("user_id")] Guid UserId,
-        [property: JsonPropertyName("question")] string Question);
+        [property: JsonPropertyName("question")] string Question,
+        [property: JsonPropertyName("groq_api_key")] string GroqApiKey,
+        [property: JsonPropertyName("groq_model")] string? GroqModel);
 
     private sealed record AskResponse(
         [property: JsonPropertyName("answer")] string Answer,
         [property: JsonPropertyName("source_note_ids")] List<Guid> SourceNoteIds,
-        [property: JsonPropertyName("grounded")] bool Grounded);
+        [property: JsonPropertyName("grounded")] bool Grounded,
+        [property: JsonPropertyName("status")] string? Status);
+
+    private sealed record ListModelsRequest(
+        [property: JsonPropertyName("api_key")] string ApiKey);
+
+    private sealed record ListModelsResponse(
+        [property: JsonPropertyName("status")] string Status,
+        [property: JsonPropertyName("models")] List<string> Models);
 }

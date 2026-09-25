@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Synap.Domain;
 using Synap.Infrastructure.Services.Ai;
 using System.Net;
 using Xunit;
@@ -24,11 +25,11 @@ public class AiServiceClientTests
         var userId = Guid.NewGuid();
         var handler = FakeHttpMessageHandler.ReturningJson(
             HttpStatusCode.OK,
-            """{"answer": "You fixed it by clearing the cache.", "source_note_ids": [], "grounded": true}""");
+            """{"answer": "You fixed it by clearing the cache.", "source_note_ids": [], "grounded": true, "status": "ok"}""");
 
         var client = CreateClient(handler);
 
-        await client.AskAsync(userId, "How did I fix the build last time?");
+        await client.AskAsync(userId, "How did I fix the build last time?", "gsk_user_key", null);
 
         Assert.NotNull(handler.LastRequestBody);
         Assert.Contains(userId.ToString(), handler.LastRequestBody);
@@ -40,13 +41,81 @@ public class AiServiceClientTests
         var noteId = Guid.NewGuid();
         var handler = FakeHttpMessageHandler.ReturningJson(
             HttpStatusCode.OK,
-            $$"""{"answer": "Answer text", "source_note_ids": ["{{noteId}}"], "grounded": true}""");
+            $$"""{"answer": "Answer text", "source_note_ids": ["{{noteId}}"], "grounded": true, "status": "ok"}""");
 
-        var answer = await CreateClient(handler).AskAsync(Guid.NewGuid(), "question");
+        var answer = await CreateClient(handler).AskAsync(Guid.NewGuid(), "question", "gsk_user_key", null);
 
         Assert.True(answer.Grounded);
         Assert.Equal("Answer text", answer.Answer);
         Assert.Equal([noteId], answer.SourceNoteIds);
+        Assert.Equal(AssistantAnswerStatus.Ok, answer.Status);
+    }
+
+    [Fact]
+    public async Task AskAsync_forwards_the_users_own_key_and_model()
+    {
+        var handler = FakeHttpMessageHandler.ReturningJson(
+            HttpStatusCode.OK,
+            """{"answer": "a", "source_note_ids": [], "grounded": false, "status": "no_relevant_notes"}""");
+
+        var answer = await CreateClient(handler).AskAsync(Guid.NewGuid(), "question", "gsk_user_key", "llama-3.3-70b");
+
+        Assert.Contains("\"groq_api_key\":\"gsk_user_key\"", handler.LastRequestBody);
+        Assert.Contains("\"groq_model\":\"llama-3.3-70b\"", handler.LastRequestBody);
+        Assert.Equal(AssistantAnswerStatus.NoRelevantNotes, answer.Status);
+    }
+
+    [Theory]
+    [InlineData("invalid_key", AssistantAnswerStatus.InvalidKey)]
+    [InlineData("rate_limited", AssistantAnswerStatus.RateLimited)]
+    [InlineData("unavailable", AssistantAnswerStatus.Unavailable)]
+    [InlineData("something_new", AssistantAnswerStatus.Unavailable)]
+    public async Task AskAsync_maps_every_status(string wireStatus, AssistantAnswerStatus expected)
+    {
+        var handler = FakeHttpMessageHandler.ReturningJson(
+            HttpStatusCode.OK,
+            $$"""{"answer": "m", "source_note_ids": [], "grounded": false, "status": "{{wireStatus}}"}""");
+
+        var answer = await CreateClient(handler).AskAsync(Guid.NewGuid(), "question", "gsk_user_key", null);
+
+        Assert.Equal(expected, answer.Status);
+    }
+
+    [Fact]
+    public async Task ListModelsAsync_maps_an_ok_response()
+    {
+        var handler = FakeHttpMessageHandler.ReturningJson(HttpStatusCode.OK, """{"status": "ok", "models": ["a", "b"]}""");
+
+        var result = await CreateClient(handler).ListModelsAsync("gsk_user_key");
+
+        Assert.Equal(LlmKeyStatus.Ok, result.Status);
+        Assert.Equal(["a", "b"], result.Models);
+        Assert.Contains("\"api_key\":\"gsk_user_key\"", handler.LastRequestBody);
+        Assert.Equal("/internal/llm/models", handler.LastRequest!.RequestUri!.AbsolutePath);
+    }
+
+    [Theory]
+    [InlineData("invalid_key", LlmKeyStatus.InvalidKey)]
+    [InlineData("rate_limited", LlmKeyStatus.RateLimited)]
+    [InlineData("unavailable", LlmKeyStatus.Unavailable)]
+    public async Task ListModelsAsync_maps_failures(string wireStatus, LlmKeyStatus expected)
+    {
+        var handler = FakeHttpMessageHandler.ReturningJson(HttpStatusCode.OK, $$"""{"status": "{{wireStatus}}", "models": []}""");
+
+        var result = await CreateClient(handler).ListModelsAsync("gsk_user_key");
+
+        Assert.Equal(expected, result.Status);
+        Assert.Empty(result.Models);
+    }
+
+    [Fact]
+    public async Task ListModelsAsync_degrades_to_unavailable_when_unreachable()
+    {
+        var handler = FakeHttpMessageHandler.Throwing(new HttpRequestException("Connection refused"));
+
+        var result = await CreateClient(handler).ListModelsAsync("gsk_user_key");
+
+        Assert.Equal(LlmKeyStatus.Unavailable, result.Status);
     }
 
     [Fact]
@@ -54,7 +123,7 @@ public class AiServiceClientTests
     {
         var handler = FakeHttpMessageHandler.Throwing(new HttpRequestException("Connection refused"));
 
-        var answer = await CreateClient(handler).AskAsync(Guid.NewGuid(), "question");
+        var answer = await CreateClient(handler).AskAsync(Guid.NewGuid(), "question", "gsk_user_key", null);
 
         // Never an exception bubbling up, and never a "grounded" (i.e. trustworthy) answer -
         // specs/ai-assistant "graceful handling of generation provider failure" applies just as
@@ -62,6 +131,7 @@ public class AiServiceClientTests
         Assert.False(answer.Grounded);
         Assert.Empty(answer.SourceNoteIds);
         Assert.NotEmpty(answer.Answer);
+        Assert.Equal(AssistantAnswerStatus.Unavailable, answer.Status);
     }
 
     [Fact]

@@ -37,6 +37,12 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
 
         builder.HasIndex(u => u.ApiTokenHash);
 
+        builder.Property(u => u.GroqApiKeyEncrypted).HasColumnName("groq_api_key_encrypted");
+        builder.Property(u => u.GroqApiKeyLast4).HasColumnName("groq_api_key_last4").HasMaxLength(4);
+        builder.Property(u => u.GroqApiKeyUpdatedAt).HasColumnName("groq_api_key_updated_at");
+        builder.Property(u => u.GroqModel).HasColumnName("groq_model").HasMaxLength(128);
+        builder.Ignore(u => u.HasGroqApiKey);
+
         builder.Property(u => u.FechaCreacion)
             .HasColumnName("created_at")
             .IsRequired()

@@ -25,6 +25,16 @@ public sealed class User : AbsEntity<UserId>
     public string? ApiTokenHash { get; private set; }
     public DateTime? ApiTokenCreatedAt { get; private set; }
 
+    // The user's own Groq API key (byok-groq-and-settings) - only ever stored encrypted; the
+    // last four characters are kept apart so the UI can show a masked form without decrypting.
+    public string? GroqApiKeyEncrypted { get; private set; }
+    public string? GroqApiKeyLast4 { get; private set; }
+    public DateTime? GroqApiKeyUpdatedAt { get; private set; }
+    // Null means "use the server's default model".
+    public string? GroqModel { get; private set; }
+
+    public bool HasGroqApiKey => GroqApiKeyEncrypted is not null;
+
     public static User Create(Email email, PasswordHash passwordHash)
         => new(UserId.Create(Guid.NewGuid()).Value, email, passwordHash);
 
@@ -37,5 +47,34 @@ public sealed class User : AbsEntity<UserId>
     {
         ApiTokenHash = hash;
         ApiTokenCreatedAt = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Sets (or replaces) the user's own Groq API key. Takes the already-encrypted value: the
+    /// domain never sees the plaintext key, only the caller that validated and encrypted it.
+    /// </summary>
+    public void SetGroqApiKey(string encryptedKey, string last4)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(encryptedKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(last4);
+
+        GroqApiKeyEncrypted = encryptedKey;
+        GroqApiKeyLast4 = last4;
+        GroqApiKeyUpdatedAt = DateTime.UtcNow;
+    }
+
+    /// <summary>Removes the key and the model chosen for it - a new key may not offer that model.</summary>
+    public void ClearGroqApiKey()
+    {
+        GroqApiKeyEncrypted = null;
+        GroqApiKeyLast4 = null;
+        GroqApiKeyUpdatedAt = null;
+        GroqModel = null;
+    }
+
+    /// <summary>Null resets to the server's default model.</summary>
+    public void SetGroqModel(string? model)
+    {
+        GroqModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
     }
 }

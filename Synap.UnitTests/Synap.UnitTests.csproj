@@ -22,6 +22,7 @@
     <ProjectReference Include="..\Synap.Infrastructure\Synap.Infrastructure.csproj" />
     <ProjectReference Include="..\Synap.Shared.Application\Synap.Shared.Application.csproj" />
     <ProjectReference Include="..\Synap.Domain\Synap.Domain.csproj" />
+    <ProjectReference Include="..\Synap.Application\Synap.Application.csproj" />
   </ItemGroup>
 
 </Project>

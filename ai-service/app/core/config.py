@@ -6,7 +6,11 @@ class Settings(BaseSettings):
 
     Embedding model and LLM provider are resolved here (design.md's Open Questions on this are
     no longer open): fastembed's BAAI/bge-small-en-v1.5 for embeddings (ONNX, no PyTorch/GPU
-    needed - see design.md Decision 2's VPS constraint) and Groq's free tier for generation.
+    needed - see design.md Decision 2's VPS constraint) and Groq for generation.
+
+    There is deliberately no Groq API key here: since byok-groq-and-settings every user brings
+    their own, which the .NET API passes per request. `groq_model` is only the default model for
+    users who haven't picked one - it costs the owner nothing.
     """
 
     model_config = SettingsConfigDict(env_prefix="SYNAP_AI_")
@@ -20,7 +24,6 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-small-en-v1.5"
 
     llm_provider: str = "groq"
-    groq_api_key: str = ""
     groq_model: str = "qwen/qwen3.8-27b"
 
 

@@ -10,6 +10,7 @@ using Synap.Api;
 using Synap.Api.Authentication;
 using Synap.Api.Middleware;
 using Synap.Application;
+using Synap.Application.Features.Settings;
 using Microsoft.EntityFrameworkCore;
 using Synap.Infrastructure;
 using Synap.Infrastructure.Persistence.Command;
@@ -57,6 +58,7 @@ try
     builder.Services.AddHtmlFileLogging(opts => builder.Configuration.GetSection("HtmlFileLog").Bind(opts));
 
     builder.Services.AddApplication();
+    builder.Services.Configure<AiOptions>(builder.Configuration.GetSection(AiOptions.SectionName));
     builder.Services.AddSharedApplication();
     builder.Services.AddInfrastructure(builder.Configuration);
 

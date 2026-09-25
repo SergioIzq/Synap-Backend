@@ -26,8 +26,16 @@ public abstract class AbsWriteRepository<TEntity, TId> : IWriteRepository<TEntit
     // callers fetch through the write side specifically to mutate and save, and relying on
     // disconnected-graph Update() semantics for entities with collection navigations (Note.Tags)
     // is a well-known EF Core footgun.
-    public Task<TEntity?> GetByIdAsync(Guid id, CancellationToken cancellationToken)
-        => Context.Set<TEntity>().AsTracking().FirstOrDefaultAsync(entity => entity.Id.Value == id, cancellationToken);
+    //
+    // FindAsync with the strongly-typed key rather than `entity.Id.Value == id`: EF can't
+    // translate `.Value` on a value-converted key ("could not be translated" at runtime), while
+    // FindAsync goes through the key's converter and always returns a tracked entity. Every ID
+    // value object (UserId, NoteId, TagId) has a public (Guid) constructor.
+    public async Task<TEntity?> GetByIdAsync(Guid id, CancellationToken cancellationToken)
+    {
+        var key = (TId)Activator.CreateInstance(typeof(TId), id)!;
+        return await Context.Set<TEntity>().FindAsync([key], cancellationToken);
+    }
 
     public void Add(TEntity entity) => Context.Set<TEntity>().Add(entity);
 

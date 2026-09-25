@@ -16,6 +16,10 @@ namespace Synap.IntegrationTests;
 /// </summary>
 public sealed class PostgresFixture : IAsyncLifetime
 {
+    // Same switch Program.cs sets - without it Npgsql maps DateTime to timestamptz, the model no
+    // longer matches the migrations ("timestamp without time zone") and MigrateAsync refuses to run.
+    static PostgresFixture() => AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("pgvector/pgvector:pg16")
         .WithDatabase("synap_test")
         .WithUsername("synap_test")

@@ -14,5 +14,12 @@ public interface IAiServiceClient
 
     Task<IReadOnlyList<RelatedNote>> GetRelatedNotesAsync(Guid noteId, Guid userId, CancellationToken cancellationToken = default);
 
-    Task<AssistantAnswer> AskAsync(Guid userId, string question, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Generates with the user's own decrypted Groq key and chosen model (null = the AI
+    /// service's default model) - byok-groq-and-settings, there is no server-owned key.
+    /// </summary>
+    Task<AssistantAnswer> AskAsync(Guid userId, string question, string groqApiKey, string? groqModel, CancellationToken cancellationToken = default);
+
+    /// <summary>Validates a Groq key and lists the chat models it can use, in one call.</summary>
+    Task<LlmModelsResult> ListModelsAsync(string groqApiKey, CancellationToken cancellationToken = default);
 }

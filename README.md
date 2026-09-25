@@ -38,3 +38,11 @@ Necesita una cadena de conexión a Postgres en `Synap.Api/appsettings.Developmen
 ## Servicio de IA
 
 `ai-service/` es un servicio FastAPI (Python) independiente, desplegado aparte, que gestiona embeddings y el chat RAG. Ver su propio `Dockerfile`.
+
+La generación de respuestas usa **la API key de Groq de cada usuario** (no hay key del servidor): la API .NET la guarda cifrada con AES-256-GCM (`Secrets:EncryptionKey`, 32 bytes en base64) y se la pasa al servicio de IA solo en la petición que la necesita. En desarrollo, `appsettings.Development.json` ya trae una clave maestra de prueba; en producción es obligatoria (`SECRETS_ENCRYPTION_KEY`).
+
+Tests del servicio de IA (no requieren red ni base de datos, salvo `test_isolation.py`):
+
+```bash
+cd ai-service && pip install -r requirements-dev.txt && pytest tests/test_groq_provider.py tests/test_assistant_api.py
+```

@@ -13,6 +13,7 @@ using Synap.Infrastructure.Persistence.Data.Users;
 using Synap.Infrastructure.Services.Ai;
 using Synap.Infrastructure.Services.Auth;
 using Synap.Infrastructure.Services.Bookmarks;
+using Synap.Infrastructure.Services.Secrets;
 using Synap.Shared.Application.BackgroundJobs;
 using Synap.Shared.Application.Interfaces;
 
@@ -54,6 +55,10 @@ public static class DependencyInjection
 
         services.AddScoped<IJwtTokenGenerator, JwtTokenGenerator>();
         services.AddScoped<IApiTokenHasher, ApiTokenHasher>();
+
+        // Built eagerly (not in a factory lambda) so a missing/invalid SECRETS_ENCRYPTION_KEY
+        // stops the API at startup instead of on the first user saving a Groq key.
+        services.AddSingleton<ISecretProtector>(AesGcmSecretProtector.FromBase64(configuration["Secrets:EncryptionKey"]));
 
         // In-process background queue (design.md Decision 8) - singleton so the hosted service
         // and every request-scoped IBackgroundJobQueue consumer share the same channel.

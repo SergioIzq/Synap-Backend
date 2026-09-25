@@ -3,6 +3,10 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Synap.Shared.Application.Interfaces;
 using Npgsql;
 using System.Net;
 using System.Net.Http.Headers;
@@ -35,6 +39,9 @@ public sealed class ApiFixture : IAsyncLifetime
 
     public string ConnectionString => _container.GetConnectionString();
 
+    /// <summary>Every email the API "sends" during the test run - nothing leaves the process.</summary>
+    public CapturingEmailSender Emails { get; } = new();
+
     public async Task InitializeAsync()
     {
         await _container.StartAsync();
@@ -46,6 +53,11 @@ public sealed class ApiFixture : IAsyncLifetime
             builder.UseSetting("AiService:BaseUrl", "http://ai-service.invalid");
             builder.UseSetting("ForwardedHeaders:KnownProxies", KnownProxyIp);
             builder.ConfigureServices(services => services.AddSingleton<IStartupFilter, FakeRemoteIpStartupFilter>());
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<IEmailSender>();
+                services.AddSingleton<IEmailSender>(Emails);
+            });
         });
 
         // Forces host start-up (and with it Program's Database.Migrate()).
@@ -64,6 +76,20 @@ public sealed class ApiFixture : IAsyncLifetime
         var n = Interlocked.Increment(ref _nextClientIp);
         client.DefaultRequestHeaders.Add(RemoteIpHeader, remoteIp ?? $"10.200.{n / 250}.{n % 250 + 1}");
         return client;
+    }
+
+    /// <summary>Signs arbitrary claims with the Development JWT settings the test host uses.</summary>
+    public static string SignToken(IEnumerable<System.Security.Claims.Claim> claims)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.Development.json"))
+            .Build();
+        var settings = configuration.GetSection("JwtSettings");
+        var key = new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(System.Text.Encoding.UTF8.GetBytes(settings["SecretKey"]!));
+        var token = new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(
+            settings["Issuer"], settings["Audience"], claims, DateTime.UtcNow, DateTime.UtcNow.AddHours(1),
+            new Microsoft.IdentityModel.Tokens.SigningCredentials(key, Microsoft.IdentityModel.Tokens.SecurityAlgorithms.HmacSha256));
+        return new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().WriteToken(token);
     }
 
     public async Task<NpgsqlConnection> OpenConnectionAsync()
@@ -139,4 +165,27 @@ public static class ApiClientExtensions
 
     public static Task<HttpResponseMessage> DeleteAsJsonAsync<T>(this HttpClient client, string url, T body)
         => client.SendAsync(new HttpRequestMessage(HttpMethod.Delete, url) { Content = JsonContent.Create(body) });
+}
+
+public sealed class CapturingEmailSender : IEmailSender
+{
+    private readonly List<EmailMessage> _sent = [];
+
+    public void Enqueue(EmailMessage message)
+    {
+        lock (_sent) _sent.Add(message);
+    }
+
+    public IReadOnlyList<EmailMessage> To(string email)
+    {
+        lock (_sent) return _sent.Where(m => m.To == email).ToList();
+    }
+
+    /// <summary>The token from the reset link in the latest email sent to this address.</summary>
+    public string LatestResetToken(string email)
+    {
+        var text = To(email).Last().TextBody;
+        var match = System.Text.RegularExpressions.Regex.Match(text, @"reset-password\?token=([^\s]+)");
+        return Uri.UnescapeDataString(match.Groups[1].Value);
+    }
 }

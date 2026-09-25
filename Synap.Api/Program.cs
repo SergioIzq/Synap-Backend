@@ -11,6 +11,7 @@ using Synap.Api.Authentication;
 using Synap.Api.Middleware;
 using Synap.Application;
 using Synap.Application.Features.Settings;
+using Synap.Application.Features.Users;
 using Microsoft.EntityFrameworkCore;
 using Synap.Infrastructure;
 using Synap.Infrastructure.Persistence.Command;
@@ -20,6 +21,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Synap.Api.Health;
+using Synap.Infrastructure.Services.Auth;
 using SergioIzq.Domain.Kernel.Abstractions.Results;
 using Synap.Shared.Application.Interfaces;
 using System.Net;
@@ -67,6 +69,7 @@ try
 
     builder.Services.AddApplication();
     builder.Services.Configure<AiOptions>(builder.Configuration.GetSection(AiOptions.SectionName));
+    builder.Services.Configure<AppOptions>(builder.Configuration.GetSection(AppOptions.SectionName));
     builder.Services.AddSharedApplication();
     builder.Services.AddInfrastructure(builder.Configuration);
 
@@ -171,6 +174,15 @@ try
                 QueueLimit = 0,
             }));
 
+        options.AddPolicy(RateLimitPolicies.PasswordRecovery, httpContext =>
+            RateLimitPartition.GetSlidingWindowLimiter(ClientIp(httpContext), _ => new SlidingWindowRateLimiterOptions
+            {
+                PermitLimit = RateLimitPolicies.PasswordRecoveryPermitLimit,
+                Window = RateLimitPolicies.PasswordRecoveryWindow,
+                SegmentsPerWindow = 6,
+                QueueLimit = 0,
+            }));
+
         options.AddPolicy(RateLimitPolicies.Register, httpContext =>
             RateLimitPartition.GetSlidingWindowLimiter(ClientIp(httpContext), _ => new SlidingWindowRateLimiterOptions
             {
@@ -198,8 +210,10 @@ try
         }
     });
 
-    // A session JWT stays cryptographically valid after its account is deleted - reject it if
-    // the user no longer exists (backend-hardening design.md Decision 2). Cached for a minute.
+    // A session JWT stays cryptographically valid after its account is deleted or its password
+    // changed - reject it unless its "stamp" claim matches the user's current security stamp
+    // (null when the user no longer exists). password-recovery design.md Decision 4; the stamp
+    // is cached for a minute and invalidated on every change.
     builder.Services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
     {
         options.Events ??= new JwtBearerEvents();
@@ -216,10 +230,16 @@ try
             var subject = context.Principal?.FindFirst("sub")?.Value
                 ?? context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
 
-            var cache = context.HttpContext.RequestServices.GetRequiredService<IUserExistenceCache>();
-            if (!Guid.TryParse(subject, out var userId) || !await cache.ExistsAsync(userId, context.HttpContext.RequestAborted))
+            var tokenStamp = context.Principal?.FindFirst(JwtTokenGenerator.SecurityStampClaim)?.Value;
+
+            var cache = context.HttpContext.RequestServices.GetRequiredService<IUserSessionCache>();
+            var currentStamp = Guid.TryParse(subject, out var userId)
+                ? await cache.GetSecurityStampAsync(userId, context.HttpContext.RequestAborted)
+                : null;
+
+            if (currentStamp is null || tokenStamp is null || !string.Equals(currentStamp, tokenStamp, StringComparison.Ordinal))
             {
-                context.Fail("La cuenta ya no existe.");
+                context.Fail("La sesión ya no es válida.");
             }
         };
     });

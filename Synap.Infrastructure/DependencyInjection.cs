@@ -13,6 +13,7 @@ using Synap.Infrastructure.Persistence.Data.Users;
 using Synap.Infrastructure.Services.Ai;
 using Synap.Infrastructure.Services.Auth;
 using Synap.Infrastructure.Services.Bookmarks;
+using Synap.Infrastructure.Services.Email;
 using Synap.Infrastructure.Services.Secrets;
 using Synap.Shared.Application.BackgroundJobs;
 using Synap.Shared.Application.Interfaces;
@@ -53,10 +54,17 @@ public static class DependencyInjection
         services.AddScoped<INoteWriteRepository, NoteWriteRepository>();
         services.AddScoped<ITagWriteRepository, TagWriteRepository>();
 
-        services.AddScoped<IJwtTokenGenerator, JwtTokenGenerator>();
+        // Built eagerly: a missing or too-short JWT_SECRET_KEY stops the API at startup with a
+        // clear message instead of failing every login with a 500.
+        services.AddSingleton<IJwtTokenGenerator>(new JwtTokenGenerator(configuration));
         services.AddScoped<IApiTokenHasher, ApiTokenHasher>();
         services.AddMemoryCache();
-        services.AddSingleton<IUserExistenceCache, UserExistenceCache>();
+
+        services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));
+        services.AddSingleton<ISmtpTransport, MailKitSmtpTransport>();
+        services.AddSingleton<IEmailSender, BackgroundEmailSender>();
+        services.AddSingleton<IRecoveryRequestLimiter, MemoryRecoveryRequestLimiter>();
+        services.AddSingleton<IUserSessionCache, UserSessionCache>();
 
         // Built eagerly (not in a factory lambda) so a missing/invalid SECRETS_ENCRYPTION_KEY
         // stops the API at startup instead of on the first user saving a Groq key.

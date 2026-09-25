@@ -5,7 +5,9 @@ using Microsoft.AspNetCore.RateLimiting;
 using SergioIzq.AspNetCore.Kernel.Controllers;
 using SergioIzq.Domain.Kernel.Abstractions.Results;
 using Synap.Application.Features.Users.Commands.Authenticate;
+using Synap.Application.Features.Users.Commands.ForgotPassword;
 using Synap.Application.Features.Users.Commands.GenerateApiToken;
+using Synap.Application.Features.Users.Commands.ResetPassword;
 using Synap.Application.Features.Users.Commands.Register;
 using Synap.Application.Features.Users.Queries;
 
@@ -31,6 +33,23 @@ public class AuthController : AbsController
     [AllowAnonymous]
     [EnableRateLimiting(RateLimitPolicies.Auth)]
     public async Task<IActionResult> Login([FromBody] AuthenticateUserCommand command)
+        => await SendAndHandleAsync(command);
+
+    /// <summary>
+    /// Emails a password-recovery link if the address has an account. Always 200 with the same
+    /// body - it never reveals whether the email is registered (specs/identity).
+    /// </summary>
+    [HttpPost("forgot-password")]
+    [AllowAnonymous]
+    [EnableRateLimiting(RateLimitPolicies.PasswordRecovery)]
+    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordCommand command)
+        => await SendAndHandleAsync(command);
+
+    /// <summary>Sets a new password with the emailed token; ends every existing session.</summary>
+    [HttpPost("reset-password")]
+    [AllowAnonymous]
+    [EnableRateLimiting(RateLimitPolicies.Auth)]
+    public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordCommand command)
         => await SendAndHandleAsync(command);
 
     /// <summary>

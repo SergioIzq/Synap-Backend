@@ -43,6 +43,12 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.GroqModel).HasColumnName("groq_model").HasMaxLength(128);
         builder.Ignore(u => u.HasGroqApiKey);
 
+        builder.Property(u => u.PasswordResetTokenHash).HasColumnName("password_reset_token_hash").HasMaxLength(64);
+        builder.Property(u => u.PasswordResetExpiresAt).HasColumnName("password_reset_expires_at");
+        builder.HasIndex(u => u.PasswordResetTokenHash);
+
+        builder.Property(u => u.SecurityStamp).HasColumnName("security_stamp").HasMaxLength(32).IsRequired();
+
         builder.Property(u => u.FechaCreacion)
             .HasColumnName("created_at")
             .IsRequired()

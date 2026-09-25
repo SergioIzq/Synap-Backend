@@ -11,11 +11,17 @@ public static class RateLimitPolicies
     /// <summary>Registrations per client IP.</summary>
     public const string Register = "register";
 
+    /// <summary>Password-recovery requests per client IP.</summary>
+    public const string PasswordRecovery = "password-recovery";
+
     public const int AuthPermitLimit = 10;
     public static readonly TimeSpan AuthWindow = TimeSpan.FromMinutes(1);
 
     public const int RegisterPermitLimit = 5;
     public static readonly TimeSpan RegisterWindow = TimeSpan.FromHours(1);
+
+    public const int PasswordRecoveryPermitLimit = 5;
+    public static readonly TimeSpan PasswordRecoveryWindow = TimeSpan.FromHours(1);
 
     public const string RejectionMessage = "Demasiados intentos. Espera un momento y vuelve a intentarlo.";
 }

@@ -17,6 +17,7 @@ public sealed class User : AbsEntity<UserId>
     {
         Email = email;
         PasswordHash = passwordHash;
+        SecurityStamp = NewSecurityStamp();
     }
 
     public Email Email { get; private set; }
@@ -35,6 +36,17 @@ public sealed class User : AbsEntity<UserId>
 
     public bool HasGroqApiKey => GroqApiKeyEncrypted is not null;
 
+    // Password recovery (password-recovery design.md Decision 1): only the SHA-256 of the
+    // emailed token is stored, so a leaked database can't be used to take over accounts.
+    public string? PasswordResetTokenHash { get; private set; }
+    public DateTime? PasswordResetExpiresAt { get; private set; }
+
+    /// <summary>
+    /// Travels in every session JWT; changing it ends all sessions issued before (specs/identity
+    /// "Password changes end other sessions"). Not used by the personal access token.
+    /// </summary>
+    public string SecurityStamp { get; private set; } = string.Empty;
+
     public static User Create(Email email, PasswordHash passwordHash)
         => new(UserId.Create(Guid.NewGuid()).Value, email, passwordHash);
 
@@ -52,7 +64,40 @@ public sealed class User : AbsEntity<UserId>
     public void ChangePassword(PasswordHash newPasswordHash)
     {
         PasswordHash = newPasswordHash;
+        RotateSecurityStamp();
     }
+
+    /// <summary>Replaces any previous pending reset - only the most recent emailed link works.</summary>
+    public void StartPasswordReset(string tokenHash, DateTime expiresAtUtc)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tokenHash);
+
+        PasswordResetTokenHash = tokenHash;
+        PasswordResetExpiresAt = expiresAtUtc;
+    }
+
+    public bool HasValidPasswordReset(DateTime nowUtc)
+        => PasswordResetTokenHash is not null && PasswordResetExpiresAt is { } expiresAt && nowUtc <= expiresAt;
+
+    /// <summary>
+    /// Sets the new password through a reset link: single use (the token is cleared) and every
+    /// existing session ends. The caller has already matched the token hash and checked expiry.
+    /// </summary>
+    public void CompletePasswordReset(PasswordHash newPasswordHash)
+    {
+        ClearPasswordReset();
+        ChangePassword(newPasswordHash);
+    }
+
+    public void ClearPasswordReset()
+    {
+        PasswordResetTokenHash = null;
+        PasswordResetExpiresAt = null;
+    }
+
+    public void RotateSecurityStamp() => SecurityStamp = NewSecurityStamp();
+
+    private static string NewSecurityStamp() => Guid.NewGuid().ToString("N");
 
     /// <summary>
     /// Sets (or replaces) the user's own Groq API key. Takes the already-encrypted value: the

@@ -16,18 +16,18 @@ public sealed class DeleteAccountCommandHandler : ICommandHandler<DeleteAccountC
     private readonly IUserWriteRepository _userWriteRepository;
     private readonly IUserContext _userContext;
     private readonly IPasswordHasher _passwordHasher;
-    private readonly IUserExistenceCache _userExistenceCache;
+    private readonly IUserSessionCache _userSessionCache;
 
     public DeleteAccountCommandHandler(
         IUserWriteRepository userWriteRepository,
         IUserContext userContext,
         IPasswordHasher passwordHasher,
-        IUserExistenceCache userExistenceCache)
+        IUserSessionCache userSessionCache)
     {
         _userWriteRepository = userWriteRepository;
         _userContext = userContext;
         _passwordHasher = passwordHasher;
-        _userExistenceCache = userExistenceCache;
+        _userSessionCache = userSessionCache;
     }
 
     public async Task<Result> Handle(DeleteAccountCommand request, CancellationToken cancellationToken)
@@ -48,7 +48,7 @@ public sealed class DeleteAccountCommandHandler : ICommandHandler<DeleteAccountC
         await _userWriteRepository.DeleteWithAllDataAsync(userId, cancellationToken);
 
         // The session JWT is checked against this cache - drop the entry so it stops working now.
-        _userExistenceCache.Invalidate(userId);
+        _userSessionCache.Invalidate(userId);
 
         return Result.Success();
     }

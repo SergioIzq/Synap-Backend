@@ -12,4 +12,7 @@ public static class UserErrors
     public static readonly Error WrongCurrentPassword = Error.Validation("La contraseña actual no es correcta.");
     public static readonly Error WrongPassword = Error.Validation("La contraseña no es correcta.");
     public static readonly Error NotFound = Error.NotFound("Usuario no encontrado.");
+
+    // One message for unknown, used and expired links - never hint which (specs/identity).
+    public static readonly Error InvalidResetLink = Error.Validation("El enlace no es válido o ha caducado. Solicita uno nuevo.");
 }

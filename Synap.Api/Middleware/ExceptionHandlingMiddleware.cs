@@ -34,7 +34,7 @@ public sealed class ExceptionHandlingMiddleware
             context.Response.ContentType = "application/json";
             context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
 
-            await context.Response.WriteAsync(JsonSerializer.Serialize(new { error = "An unexpected error occurred." }));
+            await context.Response.WriteAsync(JsonSerializer.Serialize(new { error = "Ha ocurrido un error inesperado." }));
         }
     }
 }

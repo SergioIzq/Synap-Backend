@@ -41,7 +41,7 @@ public class AuthController : AbsController
         var userId = GetCurrentUserId();
         if (userId is null)
         {
-            return Unauthorized(Result.Failure(Error.Unauthorized("Not authenticated.")));
+            return Unauthorized(Result.Failure(Error.Unauthorized("No autenticado.")));
         }
 
         return await SendAndHandleAsync(new GenerateApiTokenCommand(userId.Value));
@@ -55,7 +55,7 @@ public class AuthController : AbsController
         var userId = GetCurrentUserId();
         if (userId is null)
         {
-            return Unauthorized(Result.Failure(Error.Unauthorized("Not authenticated.")));
+            return Unauthorized(Result.Failure(Error.Unauthorized("No autenticado.")));
         }
 
         return await SendAndHandleAsync(new GetApiTokenStatusQuery(userId.Value));

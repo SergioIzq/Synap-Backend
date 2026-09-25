@@ -27,7 +27,7 @@ public sealed class GenerateApiTokenCommandHandler : ICommandHandler<GenerateApi
         var user = await _userWriteRepository.GetByIdAsync(request.UserId, cancellationToken);
         if (user is null)
         {
-            return Result.Failure<string>(Error.NotFound("User not found."));
+            return Result.Failure<string>(Error.NotFound("Usuario no encontrado."));
         }
 
         var (plainToken, hash) = _apiTokenHasher.GenerateToken();

@@ -16,6 +16,10 @@ using Synap.Infrastructure.Persistence.Command;
 using Synap.Shared.Application;
 using System.Threading.RateLimiting;
 
+// AbsEntity (SergioIzq.Domain.Kernel) sets FechaCreacion via DateTime.Now (Kind=Local).
+// Npgsql 6+ rejects Kind=Local on timestamptz without this switch.
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+
 const string ApiTokenSchemeName = "ApiToken";
 const string SmartBearerSchemeName = "SmartBearer";
 

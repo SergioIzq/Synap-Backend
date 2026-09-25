@@ -30,7 +30,7 @@ public sealed class GetRelatedNotesQueryHandler : IQueryHandler<GetRelatedNotesQ
         var note = await _noteWriteRepository.GetOwnedByUserAsync(request.NoteId, userId, cancellationToken);
         if (note is null)
         {
-            return Result.Failure<IReadOnlyList<RelatedNote>>(Error.NotFound("Note not found."));
+            return Result.Failure<IReadOnlyList<RelatedNote>>(Error.NotFound("Nota no encontrada."));
         }
 
         var related = await _aiServiceClient.GetRelatedNotesAsync(request.NoteId, userId, cancellationToken);

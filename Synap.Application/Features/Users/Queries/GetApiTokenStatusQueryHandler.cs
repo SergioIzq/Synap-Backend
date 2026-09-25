@@ -18,7 +18,7 @@ public sealed class GetApiTokenStatusQueryHandler : IQueryHandler<GetApiTokenSta
         var user = await _userWriteRepository.GetByIdAsync(request.UserId, cancellationToken);
         if (user is null)
         {
-            return Result.Failure<ApiTokenStatusResponse>(Error.NotFound("User not found."));
+            return Result.Failure<ApiTokenStatusResponse>(Error.NotFound("Usuario no encontrado."));
         }
 
         return Result.Success(new ApiTokenStatusResponse(user.ApiTokenHash is not null, user.ApiTokenCreatedAt));

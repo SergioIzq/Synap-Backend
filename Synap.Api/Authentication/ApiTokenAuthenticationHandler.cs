@@ -57,7 +57,7 @@ public sealed class ApiTokenAuthenticationHandler : AuthenticationHandler<ApiTok
 
         if (user is null)
         {
-            return AuthenticateResult.Fail("Invalid API token.");
+            return AuthenticateResult.Fail("Token de API inválido.");
         }
 
         var claims = new[]

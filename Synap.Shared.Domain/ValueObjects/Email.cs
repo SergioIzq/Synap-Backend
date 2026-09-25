@@ -25,12 +25,12 @@ public readonly record struct Email
     {
         if (string.IsNullOrWhiteSpace(value))
         {
-            return Result.Failure<Email>(Error.Validation("Email cannot be empty."));
+            return Result.Failure<Email>(Error.Validation("El email no puede estar vacío."));
         }
 
         if (!EmailRegex.IsMatch(value))
         {
-            return Result.Failure<Email>(Error.Validation($"'{value}' is not a valid email address."));
+            return Result.Failure<Email>(Error.Validation($"'{value}' no es una dirección de email válida."));
         }
 
         return Result.Success(new Email(value.ToLowerInvariant()));

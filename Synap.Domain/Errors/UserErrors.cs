@@ -4,6 +4,6 @@ namespace Synap.Domain.Errors;
 
 public static class UserErrors
 {
-    public static readonly Error EmailAlreadyRegistered = Error.Validation("This email is already registered.");
-    public static readonly Error InvalidCredentials = Error.Unauthorized("Invalid email or password.");
+    public static readonly Error EmailAlreadyRegistered = Error.Validation("Este correo ya está registrado.");
+    public static readonly Error InvalidCredentials = Error.Unauthorized("Correo o contraseña incorrectos.");
 }

@@ -21,7 +21,7 @@ public readonly record struct PasswordHash
     {
         if (string.IsNullOrWhiteSpace(value) || value.Length < 10)
         {
-            return Result.Failure<PasswordHash>(Error.Validation("The provided password hash is invalid or empty."));
+            return Result.Failure<PasswordHash>(Error.Validation("El hash de contraseña no es válido."));
         }
 
         return Result.Success(new PasswordHash(value));

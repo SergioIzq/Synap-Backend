@@ -34,13 +34,13 @@ public sealed class AddTagCommandHandler : ICommandHandler<AddTagCommand>
         var note = await _noteWriteRepository.GetOwnedByUserAsync(request.NoteId, userId, cancellationToken);
         if (note is null)
         {
-            return Result.Failure(Error.NotFound("Note not found."));
+            return Result.Failure(Error.NotFound("Nota no encontrada."));
         }
 
         var tagName = request.TagName.Trim();
         if (tagName.Length == 0)
         {
-            return Result.Failure(Error.Validation("Tag name cannot be empty."));
+            return Result.Failure(Error.Validation("El nombre de la etiqueta no puede estar vacío."));
         }
 
         // Reuse the same tag across notes rather than creating a duplicate (specs/knowledge-vault "Tagging").

@@ -25,7 +25,7 @@ public sealed class DeleteNoteCommandHandler : ICommandHandler<DeleteNoteCommand
         var note = await _noteWriteRepository.GetOwnedByUserAsync(request.NoteId, _userContext.RequireUserId(), cancellationToken);
         if (note is null)
         {
-            return Result.Failure(Error.NotFound("Note not found."));
+            return Result.Failure(Error.NotFound("Nota no encontrada."));
         }
 
         _noteWriteRepository.Delete(note);

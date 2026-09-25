@@ -35,7 +35,7 @@ public sealed class UpdateNoteCommandHandler : ICommandHandler<UpdateNoteCommand
         var note = await _noteWriteRepository.GetOwnedByUserAsync(request.NoteId, userId, cancellationToken);
         if (note is null)
         {
-            return Result.Failure(Error.NotFound("Note not found."));
+            return Result.Failure(Error.NotFound("Nota no encontrada."));
         }
 
         note.UpdateContent(request.Title, request.Content);

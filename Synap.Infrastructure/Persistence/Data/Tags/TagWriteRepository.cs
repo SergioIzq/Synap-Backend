@@ -14,5 +14,8 @@ public sealed class TagWriteRepository : AbsWriteRepository<Tag, TagId>, ITagWri
     // Tracked, not AsNoTracking: the result is meant to be attached to a Note and saved in the
     // same unit of work (see ITagWriteRepository.GetByNameAsync).
     public Task<Tag?> GetByNameAsync(Guid userId, string name, CancellationToken cancellationToken = default)
-        => Context.Set<Tag>().AsTracking().FirstOrDefaultAsync(t => t.UserId.Value == userId && t.Name == name, cancellationToken);
+    {
+        var owner = UserId.CreateFromDatabase(userId);
+        return Context.Set<Tag>().AsTracking().FirstOrDefaultAsync(t => t.UserId == owner && t.Name == name, cancellationToken);
+    }
 }

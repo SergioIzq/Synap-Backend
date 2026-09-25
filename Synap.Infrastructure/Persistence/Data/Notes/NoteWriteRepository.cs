@@ -12,8 +12,12 @@ public sealed class NoteWriteRepository : AbsWriteRepository<Note, NoteId>, INot
     }
 
     public Task<Note?> GetOwnedByUserAsync(Guid noteId, Guid userId, CancellationToken cancellationToken = default)
-        => Context.Set<Note>()
+    {
+        var id = NoteId.CreateFromDatabase(noteId);
+        var owner = UserId.CreateFromDatabase(userId);
+        return Context.Set<Note>()
             .AsTracking()
             .Include(n => n.Tags)
-            .FirstOrDefaultAsync(n => n.Id.Value == noteId && n.UserId.Value == userId, cancellationToken);
+            .FirstOrDefaultAsync(n => n.Id == id && n.UserId == owner, cancellationToken);
+    }
 }

@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     llm_provider: str = "groq"
     groq_api_key: str = ""
-    groq_model: str = "llama-3.1-8b-instant"
+    groq_model: str = "qwen/qwen3.8-27b"
 
 
 settings = Settings()

@@ -37,19 +37,14 @@ public sealed class AddTagCommandHandler : ICommandHandler<AddTagCommand>
             return Result.Failure(Error.NotFound("Nota no encontrada."));
         }
 
-        var tagName = request.TagName.Trim();
-        if (tagName.Length == 0)
+        var names = TagAssignment.Normalize([request.TagName]);
+        if (names.IsFailure)
         {
-            return Result.Failure(Error.Validation("El nombre de la etiqueta no puede estar vacío."));
+            return Result.Failure(names.Error);
         }
 
         // Reuse the same tag across notes rather than creating a duplicate (specs/knowledge-vault "Tagging").
-        var tag = await _tagWriteRepository.GetByNameAsync(userId, tagName, cancellationToken);
-        if (tag is null)
-        {
-            tag = Tag.Create(UserId.CreateFromDatabase(userId), tagName);
-            await _tagWriteRepository.CreateAsync(tag, cancellationToken);
-        }
+        var tag = await TagAssignment.GetOrCreateAsync(_tagWriteRepository, userId, names.Value[0], cancellationToken);
 
         note.AddTag(tag);
         _noteWriteRepository.Update(note);

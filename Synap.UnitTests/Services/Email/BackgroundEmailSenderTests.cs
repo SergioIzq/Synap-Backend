@@ -76,7 +76,7 @@ public class BackgroundEmailSenderTests
         Assert.Equal("sergio@example.com", sent.To.Mailboxes.Single().Address);
         Assert.Equal("Asunto", sent.Subject);
         Assert.Contains("<p>Hola</p>", sent.HtmlBody);
-        Assert.Equal("Hola", sent.TextBody.Trim());
+        Assert.Equal("Hola", sent.TextBody?.Trim());
     }
 
     [Fact]

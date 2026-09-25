@@ -18,9 +18,14 @@ internal static class NoteCreationSupport
         NoteType type,
         string? title,
         string content,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<Tag>? tags = null)
     {
         var note = Note.Create(UserId.CreateFromDatabase(userId), type, title, content);
+        foreach (var tag in tags ?? [])
+        {
+            note.AddTag(tag);
+        }
 
         await noteWriteRepository.CreateAsync(note, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);

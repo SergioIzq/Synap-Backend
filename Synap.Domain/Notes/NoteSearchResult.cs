@@ -6,7 +6,7 @@ public sealed record NoteSearchResult(
     Guid Id,
     string? Title,
     string Content,
-    NoteType Type,
+    [property: System.Text.Json.Serialization.JsonConverter(typeof(NoteTypeJsonConverter))] NoteType Type,
     DateTime CreatedAt,
     DateTime UpdatedAt,
     IReadOnlyList<string> Tags,

@@ -16,6 +16,13 @@ public sealed class TagWriteRepository : AbsWriteRepository<Tag, TagId>, ITagWri
     public Task<Tag?> GetByNameAsync(Guid userId, string name, CancellationToken cancellationToken = default)
     {
         var owner = UserId.CreateFromDatabase(userId);
-        return Context.Set<Tag>().AsTracking().FirstOrDefaultAsync(t => t.UserId == owner && t.Name == name, cancellationToken);
+        // Case-insensitive: "#Docker" reuses an existing "docker" (keeping its spelling) instead of
+        // creating a near-duplicate tag.
+        var lowered = name.ToLower();
+        return Context.Set<Tag>()
+            .AsTracking()
+            .Where(t => t.UserId == owner && t.Name.ToLower() == lowered)
+            .OrderBy(t => t.FechaCreacion)
+            .FirstOrDefaultAsync(cancellationToken);
     }
 }

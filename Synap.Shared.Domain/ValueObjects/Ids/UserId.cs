@@ -22,7 +22,7 @@ public readonly record struct UserId : IGuidValueObject
     {
         if (value == Guid.Empty)
         {
-            return Result.Failure<UserId>(Error.Validation("The user ID cannot be empty."));
+            return Result.Failure<UserId>(Error.Validation("El identificador del usuario no puede estar vacío."));
         }
 
         return Result.Success(new UserId(value));

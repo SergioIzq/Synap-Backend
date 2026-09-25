@@ -22,7 +22,7 @@ public readonly record struct TagId : IGuidValueObject
     {
         if (value == Guid.Empty)
         {
-            return Result.Failure<TagId>(Error.Validation("The tag ID cannot be empty."));
+            return Result.Failure<TagId>(Error.Validation("El identificador de la etiqueta no puede estar vacío."));
         }
 
         return Result.Success(new TagId(value));

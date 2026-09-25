@@ -22,7 +22,7 @@ public readonly record struct NoteId : IGuidValueObject
     {
         if (value == Guid.Empty)
         {
-            return Result.Failure<NoteId>(Error.Validation("The note ID cannot be empty."));
+            return Result.Failure<NoteId>(Error.Validation("El identificador de la nota no puede estar vacío."));
         }
 
         return Result.Success(new NoteId(value));

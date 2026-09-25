@@ -73,7 +73,10 @@ public sealed class AiServiceClient : IAiServiceClient
             var result = await response.Content.ReadFromJsonAsync<AskResponse>(cancellationToken)
                 ?? throw new InvalidOperationException("Empty response from AI service.");
 
-            return new AssistantAnswer(result.Answer, result.SourceNoteIds, result.Grounded, ParseAnswerStatus(result.Status));
+            return new AssistantAnswer(result.Answer, result.SourceNoteIds, result.Grounded, ParseAnswerStatus(result.Status))
+            {
+                Sources = result.Sources?.Select(s => new AssistantSource(s.Id, s.Title)).ToList() ?? [],
+            };
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
         {
@@ -147,7 +150,12 @@ public sealed class AiServiceClient : IAiServiceClient
         [property: JsonPropertyName("answer")] string Answer,
         [property: JsonPropertyName("source_note_ids")] List<Guid> SourceNoteIds,
         [property: JsonPropertyName("grounded")] bool Grounded,
-        [property: JsonPropertyName("status")] string? Status);
+        [property: JsonPropertyName("status")] string? Status,
+        [property: JsonPropertyName("sources")] List<AskSourceResponse>? Sources);
+
+    private sealed record AskSourceResponse(
+        [property: JsonPropertyName("id")] Guid Id,
+        [property: JsonPropertyName("title")] string Title);
 
     private sealed record ListModelsRequest(
         [property: JsonPropertyName("api_key")] string ApiKey);

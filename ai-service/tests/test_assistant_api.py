@@ -62,7 +62,28 @@ def test_ask_ok_uses_user_key_and_default_model(client):
     assert body["status"] == "ok"
     assert body["grounded"] is True
     assert body["source_note_ids"] == ["n1"]
+    assert body["sources"] == [{"id": "n1", "title": "Nota"}]
     assert provider.calls == [("gsk_x", settings.groq_model)]
+
+
+def test_ask_untitled_source_uses_content_preview(client, monkeypatch):
+    _use(FakeProvider())
+    long_content = "Reinicia   el servidor " + "x" * 100
+
+    async def untitled(user_id, embedding):
+        return [
+            {"id": "n1", "title": None, "content": long_content, "similarity": 0.9},
+            {"id": "n2", "title": "  ", "content": "corto", "similarity": 0.8},
+        ]
+
+    monkeypatch.setattr(assistant_api.repository, "search_similar", untitled)
+
+    sources = client.post("/internal/assistant/ask", json=ASK_BODY, headers=HEADERS).json()["sources"]
+
+    assert sources[0]["title"].startswith("Reinicia el servidor x")
+    assert sources[0]["title"].endswith("…")
+    assert len(sources[0]["title"]) == assistant_api.SOURCE_PREVIEW_CHARS + 1
+    assert sources[1] == {"id": "n2", "title": "corto"}
 
 
 def test_ask_uses_chosen_model(client):
@@ -102,7 +123,7 @@ def test_ask_provider_failures(client, error, status, message):
 
     assert response.status_code == 200
     body = response.json()
-    assert body == {"answer": message, "source_note_ids": [], "grounded": False, "status": status}
+    assert body == {"answer": message, "source_note_ids": [], "sources": [], "grounded": False, "status": status}
 
 
 def test_ask_requires_user_key(client):

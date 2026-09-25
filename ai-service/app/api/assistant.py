@@ -26,6 +26,9 @@ INVALID_KEY_MESSAGE = "Tu API key de Groq ya no es válida. Actualízala en Conf
 RATE_LIMITED_MESSAGE = "Has alcanzado el límite de tu cuota de Groq. Inténtalo de nuevo más tarde."
 UNAVAILABLE_MESSAGE = "El asistente no está disponible temporalmente. Inténtalo de nuevo en un momento."
 
+# Sources without a title are shown by a preview of their content instead.
+SOURCE_PREVIEW_CHARS = 60
+
 AnswerStatus = Literal["ok", "no_relevant_notes", "invalid_key", "rate_limited", "unavailable"]
 
 
@@ -38,15 +41,30 @@ class AskRequest(BaseModel):
     groq_model: str | None = None
 
 
+class AnswerSource(BaseModel):
+    id: str
+    title: str
+
+
 class AskResponse(BaseModel):
     answer: str
+    # Kept alongside `sources` for clients deployed before mobile-and-ux-polish.
     source_note_ids: list[str]
+    sources: list[AnswerSource] = []
     grounded: bool
     status: AnswerStatus
 
 
 def _failed(message: str, status: AnswerStatus) -> AskResponse:
-    return AskResponse(answer=message, source_note_ids=[], grounded=False, status=status)
+    return AskResponse(answer=message, source_note_ids=[], sources=[], grounded=False, status=status)
+
+
+def _source_title(match: dict) -> str:
+    title = (match["title"] or "").strip()
+    if title:
+        return title
+    content = " ".join(match["content"].split())
+    return content if len(content) <= SOURCE_PREVIEW_CHARS else content[:SOURCE_PREVIEW_CHARS].rstrip() + "…"
 
 
 @router.post("/ask", response_model=AskResponse)
@@ -77,6 +95,7 @@ async def ask(request: AskRequest, provider: LlmProvider = Depends(get_llm_provi
     return AskResponse(
         answer=answer,
         source_note_ids=[str(m["id"]) for m in relevant],
+        sources=[AnswerSource(id=str(m["id"]), title=_source_title(m)) for m in relevant],
         grounded=True,
         status="ok",
     )

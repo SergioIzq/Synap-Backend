@@ -52,6 +52,32 @@ public class AiServiceClientTests
     }
 
     [Fact]
+    public async Task AskAsync_maps_sources_with_titles()
+    {
+        var noteId = Guid.NewGuid();
+        var handler = FakeHttpMessageHandler.ReturningJson(
+            HttpStatusCode.OK,
+            $$"""{"answer": "a", "source_note_ids": ["{{noteId}}"], "sources": [{"id": "{{noteId}}", "title": "Fix CORS"}], "grounded": true, "status": "ok"}""");
+
+        var answer = await CreateClient(handler).AskAsync(Guid.NewGuid(), "question", "gsk_user_key", null);
+
+        Assert.Equal([new AssistantSource(noteId, "Fix CORS")], answer.Sources);
+        Assert.Equal([noteId], answer.SourceNoteIds);
+    }
+
+    [Fact]
+    public async Task AskAsync_tolerates_an_ai_service_without_sources()
+    {
+        var handler = FakeHttpMessageHandler.ReturningJson(
+            HttpStatusCode.OK,
+            """{"answer": "a", "source_note_ids": [], "grounded": false, "status": "no_relevant_notes"}""");
+
+        var answer = await CreateClient(handler).AskAsync(Guid.NewGuid(), "question", "gsk_user_key", null);
+
+        Assert.Empty(answer.Sources);
+    }
+
+    [Fact]
     public async Task AskAsync_forwards_the_users_own_key_and_model()
     {
         var handler = FakeHttpMessageHandler.ReturningJson(

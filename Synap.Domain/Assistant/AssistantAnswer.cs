@@ -14,8 +14,18 @@ public sealed record AssistantAnswer(string Answer, IReadOnlyList<Guid> SourceNo
     public const string InvalidKeyMessage = "Tu API key de Groq ya no es válida. Actualízala en Configuración.";
     public const string UnavailableMessage = "El asistente no está disponible temporalmente. Inténtalo de nuevo en un momento.";
 
+    /// <summary>
+    /// The notes the answer was grounded in, with a displayable title - the web app links to
+    /// them (specs/ai-assistant "Navigable answer sources"). SourceNoteIds is kept for clients
+    /// deployed before sources existed.
+    /// </summary>
+    public IReadOnlyList<AssistantSource> Sources { get; init; } = [];
+
     public static AssistantAnswer Failed(string message, AssistantAnswerStatus status) => new(message, [], false, status);
 }
+
+/// <summary>Title is the note's own title, or a content preview when it has none.</summary>
+public sealed record AssistantSource(Guid Id, string Title);
 
 /// <summary>
 /// byok-groq-and-settings design.md Decision 4 - one status per outcome, so the web app can

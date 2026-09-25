@@ -49,6 +49,11 @@ public sealed class User : AbsEntity<UserId>
         ApiTokenCreatedAt = DateTime.UtcNow;
     }
 
+    public void ChangePassword(PasswordHash newPasswordHash)
+    {
+        PasswordHash = newPasswordHash;
+    }
+
     /// <summary>
     /// Sets (or replaces) the user's own Groq API key. Takes the already-encrypted value: the
     /// domain never sees the plaintext key, only the caller that validated and encrypted it.

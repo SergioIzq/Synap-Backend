@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Synap.Domain;
 using Synap.Infrastructure.Persistence.Command;
 using Synap.Shared.Domain.ValueObjects;
+using Synap.Shared.Domain.ValueObjects.Ids;
 
 namespace Synap.Infrastructure.Persistence.Data.Users;
 
@@ -22,6 +23,12 @@ public sealed class UserReadRepository : IUserReadRepository
 
     public Task<User?> GetByEmailAsync(Email email, CancellationToken cancellationToken = default)
         => _context.Set<User>().AsNoTracking().FirstOrDefaultAsync(u => u.Email == email, cancellationToken);
+
+    public Task<bool> ExistsAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        var id = UserId.CreateFromDatabase(userId);
+        return _context.Set<User>().AsNoTracking().AnyAsync(u => u.Id == id, cancellationToken);
+    }
 
     public Task<User?> GetByApiTokenHashAsync(string apiTokenHash, CancellationToken cancellationToken = default)
         => _context.Set<User>().AsNoTracking().FirstOrDefaultAsync(u => u.ApiTokenHash == apiTokenHash, cancellationToken);

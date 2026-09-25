@@ -1,6 +1,7 @@
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SergioIzq.AspNetCore.Kernel.Controllers;
 using SergioIzq.Domain.Kernel.Abstractions.Results;
 using Synap.Application.Features.Users.Commands.Authenticate;
@@ -21,12 +22,14 @@ public class AuthController : AbsController
     /// <summary>Registers a new user - open self-registration, no invite code (see specs/identity).</summary>
     [HttpPost("register")]
     [AllowAnonymous]
+    [EnableRateLimiting(RateLimitPolicies.Register)]
     public async Task<IActionResult> Register([FromBody] RegisterUserCommand command)
         => await SendAndHandleAsync(command);
 
     /// <summary>Authenticates a user and returns a session JWT.</summary>
     [HttpPost("login")]
     [AllowAnonymous]
+    [EnableRateLimiting(RateLimitPolicies.Auth)]
     public async Task<IActionResult> Login([FromBody] AuthenticateUserCommand command)
         => await SendAndHandleAsync(command);
 

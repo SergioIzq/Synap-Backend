@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <!-- No Microsoft.AspNetCore.OpenApi: SergioIzq.AspNetCore.Kernel brings Swashbuckle-based Swagger (AddKernelSwagger) instead. -->
+    <PackageReference Include="AspNetCore.HealthChecks.NpgSql" Version="9.0.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>

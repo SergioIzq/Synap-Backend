@@ -72,7 +72,7 @@ public class NoteIsolationTests
         await noteWriteRepository.CreateAsync(noteB, default);
         await context.SaveChangesAsync();
 
-        var results = await noteReadRepository.SearchAsync(userA.Value, sharedTerm, tag: null);
+        var results = (await noteReadRepository.SearchAsync(userA.Value, new NoteSearchCriteria(sharedTerm, null, null, 1, 50))).Items;
 
         Assert.Contains(results, r => r.Id == noteA.Id.Value);
         Assert.DoesNotContain(results, r => r.Id == noteB.Id.Value);
@@ -105,7 +105,7 @@ public class NoteIsolationTests
         await noteWriteRepository.CreateAsync(noteB, default);
         await context.SaveChangesAsync();
 
-        var results = await noteReadRepository.SearchAsync(userA.Value, searchTerm: null, tag: "work");
+        var results = (await noteReadRepository.SearchAsync(userA.Value, new NoteSearchCriteria(null, "work", null, 1, 50))).Items;
 
         Assert.Contains(results, r => r.Id == noteA.Id.Value);
         Assert.DoesNotContain(results, r => r.Id == noteB.Id.Value);

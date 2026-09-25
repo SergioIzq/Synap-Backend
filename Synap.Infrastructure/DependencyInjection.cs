@@ -55,6 +55,8 @@ public static class DependencyInjection
 
         services.AddScoped<IJwtTokenGenerator, JwtTokenGenerator>();
         services.AddScoped<IApiTokenHasher, ApiTokenHasher>();
+        services.AddMemoryCache();
+        services.AddSingleton<IUserExistenceCache, UserExistenceCache>();
 
         // Built eagerly (not in a factory lambda) so a missing/invalid SECRETS_ENCRYPTION_KEY
         // stops the API at startup instead of on the first user saving a Groq key.

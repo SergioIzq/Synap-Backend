@@ -35,6 +35,12 @@ public sealed class RegisterUserCommandHandler : ICommandHandler<RegisterUserCom
             return Result.Failure(emailResult.Error);
         }
 
+        var passwordResult = PasswordPolicy.Validate(request.Password);
+        if (passwordResult.IsFailure)
+        {
+            return passwordResult;
+        }
+
         var existingUser = await _userReadRepository.GetByEmailAsync(emailResult.Value, cancellationToken);
         if (existingUser is not null)
         {

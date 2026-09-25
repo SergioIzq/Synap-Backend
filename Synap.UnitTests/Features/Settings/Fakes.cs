@@ -32,6 +32,15 @@ internal sealed class FakeUserRepository : IUserWriteRepository
     public void Update(User entity) => UpdateCalls++;
 
     public void Delete(User entity) => _users.Remove(entity.Id.Value);
+
+    public List<Guid> DeletedWithAllData { get; } = [];
+
+    public Task DeleteWithAllDataAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        DeletedWithAllData.Add(userId);
+        _users.Remove(userId);
+        return Task.CompletedTask;
+    }
 }
 
 internal sealed class FakeUnitOfWork : IUnitOfWork

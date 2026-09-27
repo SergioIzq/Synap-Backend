@@ -23,6 +23,11 @@ class Settings(BaseSettings):
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"
 
+    # Upper bound on the notes' text sent with one scoped question (scoped-assistant design.md
+    # Decision 3) - characters, not tokens, kept conservative so a question plus its short
+    # history stays well under the free Groq tier's tokens-per-minute limit.
+    context_budget_chars: int = 12_000
+
     llm_provider: str = "groq"
     groq_model: str = "qwen/qwen3.8-27b"
 

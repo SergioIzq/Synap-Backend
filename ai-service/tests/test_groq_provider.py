@@ -7,8 +7,14 @@ import logging
 import httpx
 import pytest
 
-from app.llm.groq_provider import GroqProvider
-from app.llm.provider import LlmInvalidCredentialsError, LlmProviderUnavailableError, LlmRateLimitedError
+from app.llm.groq_provider import SYSTEM_PROMPT, GroqProvider
+from app.llm.provider import (
+    AnswerScope,
+    HistoryTurn,
+    LlmInvalidCredentialsError,
+    LlmProviderUnavailableError,
+    LlmRateLimitedError,
+)
 
 SECRET_KEY = "gsk_test_super_secret_value_1234"
 
@@ -92,3 +98,60 @@ async def test_list_models_invalid_key():
 
     with pytest.raises(LlmInvalidCredentialsError):
         await provider.list_models(SECRET_KEY)
+
+
+def _capture_messages(seen: dict):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["messages"] = json.loads(request.content)["messages"]
+        return _chat_ok(request)
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_unscoped_prompt_is_unchanged():
+    """scoped-assistant task 1.4 - without scope/history the request is the original two messages."""
+    seen = {}
+
+    await _provider(_capture_messages(seen)).generate_answer("¿q?", "ctx", SECRET_KEY, "m")
+
+    assert seen["messages"] == [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": "Notes:\nctx\n\nQuestion: ¿q?"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scoped_prompt_has_scope_line_and_earlier_turns_before_the_question():
+    seen = {}
+    history = [HistoryTurn("resume la nota", "1. uno\n2. dos"), HistoryTurn("¿y el 1?", "Uno es...")]
+
+    await _provider(_capture_messages(seen)).generate_answer(
+        "desarrolla el punto 2",
+        "[CORS]\ncontenido",
+        SECRET_KEY,
+        "m",
+        history=history,
+        scope=AnswerScope(kind="note", label="CORS", partial=True),
+    )
+
+    messages = seen["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user", "assistant", "user"]
+    assert messages[0]["content"].startswith(SYSTEM_PROMPT)
+    assert '"CORS"' in messages[0]["content"] and "only its beginning" in messages[0]["content"]
+    assert messages[1]["content"] == "resume la nota"
+    assert messages[2]["content"] == "1. uno\n2. dos"
+    # Notes are sent once, with the new question - not repeated for earlier turns.
+    assert messages[-1]["content"] == "Notes:\n[CORS]\ncontenido\n\nQuestion: desarrolla el punto 2"
+    assert all("contenido" not in m["content"] for m in messages[1:-1])
+
+
+@pytest.mark.asyncio
+async def test_tag_scope_line_names_the_tag():
+    seen = {}
+
+    await _provider(_capture_messages(seen)).generate_answer(
+        "q", "ctx", SECRET_KEY, "m", scope=AnswerScope(kind="tag", label="docker")
+    )
+
+    assert "#docker" in seen["messages"][0]["content"]

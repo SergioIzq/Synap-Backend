@@ -13,6 +13,8 @@ public sealed record AssistantAnswer(string Answer, IReadOnlyList<Guid> SourceNo
     public const string KeyMissingMessage = "Necesitas configurar tu API key de Groq en Configuración para usar el asistente.";
     public const string InvalidKeyMessage = "Tu API key de Groq ya no es válida. Actualízala en Configuración.";
     public const string UnavailableMessage = "El asistente no está disponible temporalmente. Inténtalo de nuevo en un momento.";
+    public const string ScopeUnsupportedMessage =
+        "Todavía no puedo responder sobre enlaces: solo guardo la dirección, no el contenido del artículo.";
 
     /// <summary>
     /// The notes the answer was grounded in, with a displayable title - the web app links to
@@ -20,6 +22,12 @@ public sealed record AssistantAnswer(string Answer, IReadOnlyList<Guid> SourceNo
     /// deployed before sources existed.
     /// </summary>
     public IReadOnlyList<AssistantSource> Sources { get; init; } = [];
+
+    /// <summary>Scoped answers only: true when the notes were cut down to fit the context budget.</summary>
+    public bool? PartialContext { get; init; }
+
+    /// <summary>Scoped answers only: the note or tag the answer is about.</summary>
+    public AssistantScope? Scope { get; init; }
 
     public static AssistantAnswer Failed(string message, AssistantAnswerStatus status) => new(message, [], false, status);
 }
@@ -41,4 +49,6 @@ public enum AssistantAnswerStatus
     [JsonStringEnumMemberName("invalidKey")] InvalidKey,
     [JsonStringEnumMemberName("rateLimited")] RateLimited,
     [JsonStringEnumMemberName("unavailable")] Unavailable,
+    /// <summary>The scope can't be answered yet - a bookmark only holds its link (scoped-assistant).</summary>
+    [JsonStringEnumMemberName("scopeUnsupported")] ScopeUnsupported,
 }

@@ -180,4 +180,43 @@ public class AiServiceClientTests
         // should already not throw for this specific, expected failure mode.
         await CreateClient(handler).GenerateEmbeddingAsync(Guid.NewGuid(), Guid.NewGuid(), "content");
     }
+
+    [Fact]
+    public async Task AskAsync_sends_scope_and_history_to_the_ai_service()
+    {
+        var noteId = Guid.NewGuid();
+        var handler = FakeHttpMessageHandler.ReturningJson(
+            HttpStatusCode.OK,
+            """{"answer": "a", "source_note_ids": [], "grounded": true, "status": "ok"}""");
+
+        await CreateClient(handler).AskAsync(
+            Guid.NewGuid(), "q", "gsk_user_key", null, new AssistantScope(noteId, null), [new AssistantTurn("antes", "respuesta")]);
+
+        Assert.Contains($"\"scope_note_id\":\"{noteId}\"", handler.LastRequestBody);
+        Assert.Contains("\"scope_tag\":null", handler.LastRequestBody);
+        Assert.Contains("\"history\":[{\"question\":\"antes\",\"answer\":\"respuesta\"}]", handler.LastRequestBody);
+    }
+
+    [Fact]
+    public async Task AskAsync_maps_partial_context_scope_and_scope_unsupported()
+    {
+        var handler = FakeHttpMessageHandler.ReturningJson(
+            HttpStatusCode.OK,
+            """{"answer": "a", "source_note_ids": [], "grounded": true, "status": "ok", "partial_context": true, "scope": {"tag": "docker"}}""");
+
+        var answer = await CreateClient(handler).AskAsync(Guid.NewGuid(), "q", "gsk_user_key", null, new AssistantScope(null, "docker"));
+
+        Assert.True(answer.PartialContext);
+        Assert.Equal(new AssistantScope(null, "docker"), answer.Scope);
+
+        var unsupported = FakeHttpMessageHandler.ReturningJson(
+            HttpStatusCode.OK,
+            """{"answer": "x", "source_note_ids": [], "grounded": false, "status": "scope_unsupported"}""");
+
+        var failed = await CreateClient(unsupported).AskAsync(Guid.NewGuid(), "q", "gsk_user_key", null);
+
+        Assert.Equal(AssistantAnswerStatus.ScopeUnsupported, failed.Status);
+        Assert.Null(failed.PartialContext);
+        Assert.Null(failed.Scope);
+    }
 }

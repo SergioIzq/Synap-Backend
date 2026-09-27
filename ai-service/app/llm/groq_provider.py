@@ -1,6 +1,8 @@
 import httpx
 
 from app.llm.provider import (
+    AnswerScope,
+    HistoryTurn,
     LlmInvalidCredentialsError,
     LlmProvider,
     LlmProviderUnavailableError,
@@ -15,6 +17,34 @@ SYSTEM_PROMPT = (
     "contain a relevant answer, say so plainly rather than guessing or using outside knowledge. "
     "Answer in the same language the question is asked in."
 )
+
+
+
+def _scope_instructions(scope: AnswerScope) -> str:
+    if scope.kind == "note":
+        text = f'The user is asking about one specific note of theirs, "{scope.label}", included below. Answer about that note.'
+        if scope.partial:
+            text += " The note is long: only its beginning is included, so say so if the answer may be in the part not shown."
+    else:
+        text = f"The notes below are the user's notes tagged #{scope.label}. Answer about what they contain."
+        if scope.partial:
+            text += " They don't all fit: only the ones most related to the question are included."
+    return text + " Earlier messages of this conversation are included for follow-up questions."
+
+
+def build_messages(
+    question: str, context: str, history: list[HistoryTurn] | None = None, scope: AnswerScope | None = None
+) -> list[dict]:
+    """System prompt, then earlier turns (without their notes - the notes are sent once, with the
+    new question), then the new question with the notes."""
+    system = SYSTEM_PROMPT if scope is None else f"{SYSTEM_PROMPT} {_scope_instructions(scope)}"
+    messages = [{"role": "system", "content": system}]
+    for turn in history or []:
+        messages.append({"role": "user", "content": turn.question})
+        messages.append({"role": "assistant", "content": turn.answer})
+    messages.append({"role": "user", "content": f"Notes:\n{context}\n\nQuestion: {question}"})
+    return messages
+
 
 # Groq's /models also lists speech-to-text, TTS and moderation models - none of them can answer
 # a chat completion, so they're not offered in the Settings model picker.
@@ -34,8 +64,16 @@ class GroqProvider(LlmProvider):
     def _client(self, timeout: float) -> httpx.AsyncClient:
         return httpx.AsyncClient(base_url=GROQ_BASE_URL, timeout=timeout, transport=self._transport)
 
-    async def generate_answer(self, question: str, context: str, api_key: str, model: str) -> str:
-        user_content = f"Notes:\n{context}\n\nQuestion: {question}"
+    async def generate_answer(
+        self,
+        question: str,
+        context: str,
+        api_key: str,
+        model: str,
+        *,
+        history: list[HistoryTurn] | None = None,
+        scope: AnswerScope | None = None,
+    ) -> str:
 
         try:
             async with self._client(timeout=20.0) as client:
@@ -44,10 +82,7 @@ class GroqProvider(LlmProvider):
                     headers={"Authorization": f"Bearer {api_key}"},
                     json={
                         "model": model,
-                        "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": user_content},
-                        ],
+                        "messages": build_messages(question, context, history, scope),
                         "temperature": 0.2,
                     },
                 )

@@ -17,6 +17,7 @@ public class AssistantAnswerSerializationTests
     [InlineData(AssistantAnswerStatus.InvalidKey, "invalidKey")]
     [InlineData(AssistantAnswerStatus.RateLimited, "rateLimited")]
     [InlineData(AssistantAnswerStatus.Unavailable, "unavailable")]
+    [InlineData(AssistantAnswerStatus.ScopeUnsupported, "scopeUnsupported")]
     public void Status_is_serialized_with_its_camelCase_wire_name(AssistantAnswerStatus status, string expected)
     {
         var options = new JsonSerializerOptions { Converters = { new JsonStringEnumConverter() } };

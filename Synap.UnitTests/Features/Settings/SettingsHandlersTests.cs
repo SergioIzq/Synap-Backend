@@ -189,7 +189,7 @@ public class SettingsHandlersTests
 
     // ---- AskAssistant ----
 
-    private AskAssistantQueryHandler AskHandler() => new(_ai, _context, _users, _protector);
+    private AskAssistantQueryHandler AskHandler() => new(_ai, _context, _users, _protector, new FakeNoteRepository());
 
     [Fact]
     public async Task Ask_without_key_returns_key_missing_and_never_calls_the_ai_service()

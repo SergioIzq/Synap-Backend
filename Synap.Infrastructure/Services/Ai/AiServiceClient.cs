@@ -59,13 +59,27 @@ public sealed class AiServiceClient : IAiServiceClient
         }
     }
 
-    public async Task<AssistantAnswer> AskAsync(Guid userId, string question, string groqApiKey, string? groqModel, CancellationToken cancellationToken = default)
+    public async Task<AssistantAnswer> AskAsync(
+        Guid userId,
+        string question,
+        string groqApiKey,
+        string? groqModel,
+        AssistantScope? scope = null,
+        IReadOnlyList<AssistantTurn>? history = null,
+        CancellationToken cancellationToken = default)
     {
         try
         {
             using var response = await _httpClient.PostAsJsonAsync(
                 "/internal/assistant/ask",
-                new AskRequest(userId, question, groqApiKey, groqModel),
+                new AskRequest(
+                    userId,
+                    question,
+                    groqApiKey,
+                    groqModel,
+                    scope?.NoteId,
+                    scope?.Tag,
+                    history?.Select(t => new AskTurnRequest(t.Question, t.Answer)).ToList() ?? []),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -76,6 +90,8 @@ public sealed class AiServiceClient : IAiServiceClient
             return new AssistantAnswer(result.Answer, result.SourceNoteIds, result.Grounded, ParseAnswerStatus(result.Status))
             {
                 Sources = result.Sources?.Select(s => new AssistantSource(s.Id, s.Title)).ToList() ?? [],
+                PartialContext = result.PartialContext,
+                Scope = result.Scope is null ? null : new AssistantScope(result.Scope.NoteId, result.Scope.Tag),
             };
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
@@ -125,6 +141,7 @@ public sealed class AiServiceClient : IAiServiceClient
         "no_relevant_notes" => AssistantAnswerStatus.NoRelevantNotes,
         "invalid_key" => AssistantAnswerStatus.InvalidKey,
         "rate_limited" => AssistantAnswerStatus.RateLimited,
+        "scope_unsupported" => AssistantAnswerStatus.ScopeUnsupported,
         _ => AssistantAnswerStatus.Unavailable,
     };
 
@@ -144,14 +161,27 @@ public sealed class AiServiceClient : IAiServiceClient
         [property: JsonPropertyName("user_id")] Guid UserId,
         [property: JsonPropertyName("question")] string Question,
         [property: JsonPropertyName("groq_api_key")] string GroqApiKey,
-        [property: JsonPropertyName("groq_model")] string? GroqModel);
+        [property: JsonPropertyName("groq_model")] string? GroqModel,
+        [property: JsonPropertyName("scope_note_id")] Guid? ScopeNoteId,
+        [property: JsonPropertyName("scope_tag")] string? ScopeTag,
+        [property: JsonPropertyName("history")] List<AskTurnRequest> History);
+
+    private sealed record AskTurnRequest(
+        [property: JsonPropertyName("question")] string Question,
+        [property: JsonPropertyName("answer")] string Answer);
 
     private sealed record AskResponse(
         [property: JsonPropertyName("answer")] string Answer,
         [property: JsonPropertyName("source_note_ids")] List<Guid> SourceNoteIds,
         [property: JsonPropertyName("grounded")] bool Grounded,
         [property: JsonPropertyName("status")] string? Status,
-        [property: JsonPropertyName("sources")] List<AskSourceResponse>? Sources);
+        [property: JsonPropertyName("sources")] List<AskSourceResponse>? Sources,
+        [property: JsonPropertyName("partial_context")] bool? PartialContext = null,
+        [property: JsonPropertyName("scope")] AskScopeResponse? Scope = null);
+
+    private sealed record AskScopeResponse(
+        [property: JsonPropertyName("note_id")] Guid? NoteId,
+        [property: JsonPropertyName("tag")] string? Tag);
 
     private sealed record AskSourceResponse(
         [property: JsonPropertyName("id")] Guid Id,

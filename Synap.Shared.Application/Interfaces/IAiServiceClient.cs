@@ -17,8 +17,18 @@ public interface IAiServiceClient
     /// <summary>
     /// Generates with the user's own decrypted Groq key and chosen model (null = the AI
     /// service's default model) - byok-groq-and-settings, there is no server-owned key.
+    /// <paramref name="scope"/> limits the answer to one note or tag and <paramref name="history"/>
+    /// carries the earlier turns of that scoped conversation (scoped-assistant) - both already
+    /// validated, ownership-checked and trimmed by the caller.
     /// </summary>
-    Task<AssistantAnswer> AskAsync(Guid userId, string question, string groqApiKey, string? groqModel, CancellationToken cancellationToken = default);
+    Task<AssistantAnswer> AskAsync(
+        Guid userId,
+        string question,
+        string groqApiKey,
+        string? groqModel,
+        AssistantScope? scope = null,
+        IReadOnlyList<AssistantTurn>? history = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Validates a Groq key and lists the chat models it can use, in one call.</summary>
     Task<LlmModelsResult> ListModelsAsync(string groqApiKey, CancellationToken cancellationToken = default);

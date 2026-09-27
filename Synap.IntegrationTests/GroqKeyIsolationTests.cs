@@ -8,6 +8,7 @@ using Synap.Application.Features.Settings.Commands;
 using Synap.Application.Features.Settings.Queries;
 using Synap.Domain;
 using Synap.Infrastructure.Persistence.Command;
+using Synap.Infrastructure.Persistence.Data.Notes;
 using Synap.Infrastructure.Persistence.Data.Users;
 using Synap.Infrastructure.Services.Secrets;
 using Synap.Shared.Application.Interfaces;
@@ -59,15 +60,56 @@ public class GroqKeyIsolationTests
             Assert.False(settingsB.Value.Ai.HasGroqKey);
             Assert.Null(settingsB.Value.Ai.GroqKeyMasked);
 
-            var answerB = await new AskAssistantQueryHandler(ai, new StaticUserContext(userB), new UserWriteRepository(context), _protector)
+            var answerB = await new AskAssistantQueryHandler(ai, new StaticUserContext(userB), new UserWriteRepository(context), _protector, new NoteWriteRepository(context))
                 .Handle(new AskAssistantQuery("¿cuál es la key de A?"), default);
             Assert.Equal(AssistantAnswerStatus.KeyMissing, answerB.Value.Status);
             Assert.Empty(ai.AskCalls);
 
-            var answerA = await new AskAssistantQueryHandler(ai, new StaticUserContext(userA), new UserWriteRepository(context), _protector)
+            var answerA = await new AskAssistantQueryHandler(ai, new StaticUserContext(userA), new UserWriteRepository(context), _protector, new NoteWriteRepository(context))
                 .Handle(new AskAssistantQuery("pregunta"), default);
             Assert.Equal(AssistantAnswerStatus.Ok, answerA.Value.Status);
             Assert.Equal([(userA, UserAKey)], ai.AskCalls);
+        }
+    }
+
+    /// <summary>
+    /// scoped-assistant task 2.4 - a scope never reaches another user's vault: another user's note
+    /// is rejected as not found before the AI service is called, and a tag is always forwarded
+    /// with the asking user's own id (the AI service then only searches that user's tags - see
+    /// ai-service tests/test_isolation.py).
+    /// </summary>
+    [Fact]
+    public async Task Scoped_questions_never_reach_another_users_notes()
+    {
+        var (userA, userB) = await CreateUsersAsync();
+        var ai = new RecordingAiServiceClient();
+        Guid userAsNote;
+
+        await using (var context = _fixture.CreateContext())
+        {
+            var note = Note.Create(Synap.Shared.Domain.ValueObjects.Ids.UserId.CreateFromDatabase(userA), NoteType.Text, "Privada de A", "secreto");
+            await new NoteWriteRepository(context).CreateAsync(note, default);
+
+            var b = await new UserWriteRepository(context).GetByIdAsync(userB, default);
+            b!.SetGroqApiKey(_protector.Protect("gsk_user_b_key_BB11"), "BB11");
+            await context.SaveChangesAsync();
+            userAsNote = note.Id.Value;
+        }
+
+        await using (var context = _fixture.CreateContext())
+        {
+            var askAsB = new AskAssistantQueryHandler(
+                ai, new StaticUserContext(userB), new UserWriteRepository(context), _protector, new NoteWriteRepository(context));
+
+            var aboutAsNote = await askAsB.Handle(new AskAssistantQuery("¿qué dice?", new AssistantScope(userAsNote, null)), default);
+            Assert.True(aboutAsNote.IsFailure);
+            Assert.Equal(AskAssistantQueryHandler.NoteNotFound, aboutAsNote.Error);
+            Assert.Empty(ai.AskCalls);
+
+            var aboutTag = await askAsB.Handle(new AskAssistantQuery("¿qué sé?", new AssistantScope(null, "solo-de-a")), default);
+            Assert.True(aboutTag.IsSuccess);
+            Assert.Equal([(userB, "gsk_user_b_key_BB11")], ai.AskCalls);
+            Assert.Equal(new AssistantScope(null, "solo-de-a"), Assert.Single(ai.Scopes));
         }
     }
 
@@ -100,6 +142,7 @@ public class GroqKeyIsolationTests
     private sealed class RecordingAiServiceClient : IAiServiceClient
     {
         public List<(Guid UserId, string Key)> AskCalls { get; } = [];
+        public List<AssistantScope?> Scopes { get; } = [];
 
         public Task GenerateEmbeddingAsync(Guid noteId, Guid userId, string content, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
@@ -107,9 +150,17 @@ public class GroqKeyIsolationTests
         public Task<IReadOnlyList<RelatedNote>> GetRelatedNotesAsync(Guid noteId, Guid userId, CancellationToken cancellationToken = default)
             => Task.FromResult<IReadOnlyList<RelatedNote>>([]);
 
-        public Task<AssistantAnswer> AskAsync(Guid userId, string question, string groqApiKey, string? groqModel, CancellationToken cancellationToken = default)
+        public Task<AssistantAnswer> AskAsync(
+            Guid userId,
+            string question,
+            string groqApiKey,
+            string? groqModel,
+            AssistantScope? scope = null,
+            IReadOnlyList<AssistantTurn>? history = null,
+            CancellationToken cancellationToken = default)
         {
             AskCalls.Add((userId, groqApiKey));
+            Scopes.Add(scope);
             return Task.FromResult(new AssistantAnswer("ok", [], true, AssistantAnswerStatus.Ok));
         }
 

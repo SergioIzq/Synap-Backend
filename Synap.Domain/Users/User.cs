@@ -47,6 +47,22 @@ public sealed class User : AbsEntity<UserId>
     /// </summary>
     public string SecurityStamp { get; private set; } = string.Empty;
 
+    // Reminder delivery over Telegram (assistant-reminders). The chat id is what the bot sends to;
+    // the link token is the single-use code the user forwards to the bot to prove the chat is
+    // theirs (design.md Decision 5). Unlike the password-reset token this one is stored as-is: it
+    // only ever links a chat, never authenticates, and is shown on screen anyway.
+    public string? TelegramChatId { get; private set; }
+    public string? TelegramLinkToken { get; private set; }
+    public DateTime? TelegramLinkTokenExpiresAt { get; private set; }
+
+    /// <summary>
+    /// The user's IANA timezone as last sent by the frontend (design.md Context). Stored because a
+    /// snooze is pressed from Telegram, where no frontend can send it; null resolves in UTC.
+    /// </summary>
+    public string? Timezone { get; private set; }
+
+    public bool HasTelegram => TelegramChatId is not null;
+
     public static User Create(Email email, PasswordHash passwordHash)
         => new(UserId.Create(Guid.NewGuid()).Value, email, passwordHash);
 
@@ -126,5 +142,63 @@ public sealed class User : AbsEntity<UserId>
     public void SetGroqModel(string? model)
     {
         GroqModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+    }
+
+    /// <summary>
+    /// Stores the timezone the frontend sent with the request, ignoring anything that isn't an id
+    /// this machine knows: a bad value would otherwise silently shift every future reminder.
+    /// Returns whether it was stored.
+    /// </summary>
+    public bool SetTimezone(string? timezone)
+    {
+        var trimmed = timezone?.Trim();
+        if (string.IsNullOrEmpty(trimmed) || !TimeZoneInfo.TryFindSystemTimeZoneById(trimmed, out _))
+        {
+            return false;
+        }
+
+        Timezone = trimmed;
+        return true;
+    }
+
+    /// <summary>Replaces any previous code - only the most recently issued one works.</summary>
+    public void StartTelegramLink(string token, DateTime expiresAtUtc)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(token);
+
+        TelegramLinkToken = token;
+        TelegramLinkTokenExpiresAt = expiresAtUtc;
+    }
+
+    public bool HasValidTelegramLink(DateTime nowUtc)
+        => TelegramLinkToken is not null && TelegramLinkTokenExpiresAt is { } expiresAt && nowUtc <= expiresAt;
+
+    /// <summary>
+    /// Links the chat that sent the code. Single use: the code is cleared, so sending it again -
+    /// from this chat or another - links nothing. The caller has already matched and checked expiry.
+    /// </summary>
+    public void CompleteTelegramLink(string chatId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(chatId);
+
+        TelegramChatId = chatId;
+        ClearTelegramLink();
+    }
+
+    public void ClearTelegramLink()
+    {
+        TelegramLinkToken = null;
+        TelegramLinkTokenExpiresAt = null;
+    }
+
+    /// <summary>
+    /// Disconnects Telegram: nothing is delivered any more and buttons on messages already sent
+    /// stop matching this user (specs/reminders "Disconnecting a Telegram account"). Reminders are
+    /// left alone - they stay pending for whenever a chat is linked again.
+    /// </summary>
+    public void DisconnectTelegram()
+    {
+        TelegramChatId = null;
+        ClearTelegramLink();
     }
 }

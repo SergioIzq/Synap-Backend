@@ -3,10 +3,12 @@ using Synap.Application.Features.Assistant.Agent;
 using Synap.Application.Features.Memory.Commands;
 using Synap.Application.Features.Notes.Commands.AddTag;
 using Synap.Application.Features.Notes.Commands.Create;
+using Synap.Application.Features.Reminders.Commands;
 using Synap.Domain;
 using Synap.Shared.Application.BackgroundJobs;
 using Synap.Shared.Domain.ValueObjects.Ids;
 using Synap.UnitTests.Features.Memory;
+using Synap.UnitTests.Features.Reminders;
 using Synap.UnitTests.Features.Settings;
 using System.Text.Json;
 
@@ -26,6 +28,7 @@ public class AssistantAgentTests
     private readonly FakeNoteRepository _notes = new();
     private readonly FakeTagRepository _tags = new();
     private readonly FakeMemoryRepository _memory = new();
+    private readonly FakeReminderRepository _reminders = new();
     private readonly FakeUnitOfWork _unitOfWork = new();
     private readonly AssistantAgent _agent;
 
@@ -35,15 +38,20 @@ public class AssistantAgentTests
         var sender = new DispatchingSender(
             new CreateNoteCommandHandler(_notes, _tags, _unitOfWork, context, new NoopJobQueue()),
             new AddTagCommandHandler(_notes, _tags, _unitOfWork, context),
-            new AddMemoryEntryCommandHandler(_memory, _unitOfWork, context));
+            new AddMemoryEntryCommandHandler(_memory, _unitOfWork, context),
+            new CreateReminderCommandHandler(_reminders, new NotesView(_notes), _unitOfWork, context));
         _agent = new AssistantAgent(_ai, sender, new NotesView(_notes));
     }
 
     private Note SeedNote(Guid owner, string title, string content)
         => _notes.Add(Note.Create(UserId.CreateFromDatabase(owner), NoteType.Text, title, content));
 
-    private Task<AgentOutcome> AskAsync(string question = "pregunta", IReadOnlyList<AssistantTurn>? history = null, IReadOnlyList<string>? memory = null)
-        => _agent.RunAsync(Me, question, history ?? [], memory ?? [], Key, "capable/model", default);
+    private Task<AgentOutcome> AskAsync(
+        string question = "pregunta",
+        IReadOnlyList<AssistantTurn>? history = null,
+        IReadOnlyList<string>? memory = null,
+        string? timezone = null)
+        => _agent.RunAsync(Me, question, history ?? [], memory ?? [], Key, "capable/model", default, timezone);
 
     private static AgentToolCall Call(string id, string name, object arguments)
         => new(id, name, JsonSerializer.SerializeToElement(arguments));
@@ -242,10 +250,224 @@ public class AssistantAgentTests
     }
 }
 
+
+/// <summary>assistant-reminders tasks 7.1 and 7.3 to 7.5 - set_reminder inside the tool loop.</summary>
+public class AssistantAgentReminderTests
+{
+    private static readonly Guid Me = Guid.NewGuid();
+    private static readonly Guid Other = Guid.NewGuid();
+    private const string Key = "gsk_me";
+    private const string Madrid = "Europe/Madrid";
+
+    private readonly FakeAiServiceClient _ai = new();
+    private readonly FakeNoteRepository _notes = new();
+    private readonly FakeTagRepository _tags = new();
+    private readonly FakeMemoryRepository _memory = new();
+    private readonly FakeReminderRepository _reminders = new();
+    private readonly FakeUnitOfWork _unitOfWork = new();
+    private readonly AssistantAgent _agent;
+
+    public AssistantAgentReminderTests()
+    {
+        var context = new FakeUserContext(Me);
+        var sender = new DispatchingSender(
+            new CreateNoteCommandHandler(_notes, _tags, _unitOfWork, context, new NoopJobQueue()),
+            new AddTagCommandHandler(_notes, _tags, _unitOfWork, context),
+            new AddMemoryEntryCommandHandler(_memory, _unitOfWork, context),
+            new CreateReminderCommandHandler(_reminders, new NotesView(_notes), _unitOfWork, context));
+        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes));
+    }
+
+    private Task<AgentOutcome> AskAsync(string question = "recuérdame algo", string? timezone = Madrid)
+        => _agent.RunAsync(Me, question, [], [], Key, "capable/model", default, timezone);
+
+    private static AgentToolCall Call(string name, object arguments)
+        => new("call-1", name, JsonSerializer.SerializeToElement(arguments));
+
+    private void Script(params AgentStepResult[] steps)
+    {
+        foreach (var step in steps)
+        {
+            _ai.Steps.Enqueue(step);
+        }
+    }
+
+    private static AgentStepResult Calls(params AgentToolCall[] calls) => new(AgentStepStatus.Ok, null, calls);
+
+    private static AgentStepResult Text(string text) => new(AgentStepStatus.Ok, text, []);
+
+    private static string Iso(DateTime moment) => moment.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+
+    // ---- The prompt's clock (task 7.1) ----
+
+    [Fact]
+    public async Task The_prompt_states_the_current_moment_and_the_users_timezone()
+    {
+        Script(Text("hola"));
+
+        await AskAsync(timezone: Madrid);
+
+        var system = _ai.StepCalls[0].Messages[0].Content!;
+        Assert.Contains("Europe/Madrid", system);
+        Assert.Contains(DateTime.UtcNow.ToString("yyyy-MM-dd"), system);
+        Assert.Contains("nearest one in the future", system);
+        Assert.Contains("09:00", system);
+    }
+
+    [Fact]
+    public async Task Without_a_timezone_the_prompt_falls_back_to_utc()
+    {
+        Script(Text("hola"));
+
+        await AskAsync(timezone: null);
+
+        Assert.Contains("UTC", _ai.StepCalls[0].Messages[0].Content!);
+    }
+
+    // ---- The tool (task 7.3) ----
+
+    [Fact]
+    public async Task The_tool_is_offered_to_the_model_with_a_parseable_schema()
+    {
+        Script(Text("hola"));
+
+        await AskAsync();
+
+        var tool = Assert.Single(_ai.StepCalls[0].Tools!, t => t.Name == "set_reminder");
+        var required = tool.Parameters.GetProperty("required").EnumerateArray().Select(p => p.GetString()).ToList();
+        Assert.Equal(["text", "due_at"], required);
+        var properties = tool.Parameters.GetProperty("properties");
+        Assert.True(properties.TryGetProperty("note_id", out _));
+        Assert.True(properties.TryGetProperty("recurrence", out _));
+        Assert.Contains("never on your own initiative", tool.Description);
+    }
+
+    // ---- Setting a reminder (task 7.4) ----
+
+    [Fact]
+    public async Task A_reminder_is_created_through_the_same_use_case_a_user_would()
+    {
+        var moment = DateTime.UtcNow.AddDays(2);
+        Script(
+            Calls(Call("set_reminder", new { text = "Renovar el certificado SSL", due_at = Iso(moment) })),
+            Text("Hecho, te aviso el viernes a las 9:00."));
+
+        var outcome = await AskAsync();
+
+        var stored = Assert.Single(_reminders.All);
+        Assert.Equal("Renovar el certificado SSL", stored.Text);
+        Assert.Equal(Me, stored.UserId.Value);
+        Assert.True(stored.IsPending);
+        var action = Assert.Single(outcome.Answer!.Actions);
+        Assert.Equal(AssistantActionType.ReminderCreated, action.Type);
+        Assert.Equal("Renovar el certificado SSL", action.Text);
+        Assert.Equal(stored.DueAt, action.DueAt);
+    }
+
+    [Fact]
+    public async Task A_recurring_reminder_carries_its_recurrence_into_the_action()
+    {
+        Script(
+            Calls(Call("set_reminder", new { text = "Revisar copias", due_at = Iso(DateTime.UtcNow.AddDays(1)), recurrence = "weekly:0" })),
+            Text("Todos los lunes."));
+
+        var outcome = await AskAsync();
+
+        Assert.Equal("weekly:0", Assert.Single(_reminders.All).Recurrence?.ToString());
+        Assert.Equal("weekly:0", Assert.Single(outcome.Answer!.Actions).Recurrence);
+    }
+
+    [Fact]
+    public async Task A_reminder_can_be_linked_to_one_of_the_users_notes()
+    {
+        var note = _notes.Add(Note.Create(UserId.CreateFromDatabase(Me), NoteType.Text, "Volúmenes de Docker", "contenido"));
+        Script(
+            Calls(Call("set_reminder", new { text = "Revisar esto", due_at = Iso(DateTime.UtcNow.AddDays(1)), note_id = note.Id.Value.ToString() })),
+            Text("Hecho."));
+
+        var outcome = await AskAsync();
+
+        Assert.Equal(note.Id, Assert.Single(_reminders.All).NoteId);
+        Assert.Equal(note.Id.Value, Assert.Single(outcome.Answer!.Actions).NoteId);
+    }
+
+    [Fact]
+    public async Task A_note_that_is_not_the_users_is_reported_as_missing_and_nothing_is_created()
+    {
+        var theirNote = _notes.Add(Note.Create(UserId.CreateFromDatabase(Other), NoteType.Text, "Su nota", "contenido"));
+        Script(
+            Calls(Call("set_reminder", new { text = "Espiando", due_at = Iso(DateTime.UtcNow.AddDays(1)), note_id = theirNote.Id.Value.ToString() })),
+            Text("No he encontrado esa nota."));
+
+        var outcome = await AskAsync();
+
+        Assert.Empty(_reminders.All);
+        Assert.Empty(outcome.Answer!.Actions);
+    }
+
+    [Fact]
+    public async Task A_moment_in_the_past_is_refused_and_the_reason_goes_back_to_the_model()
+    {
+        Script(
+            Calls(Call("set_reminder", new { text = "Tarde", due_at = Iso(DateTime.UtcNow.AddDays(-1)) })),
+            Text("Ese momento ya ha pasado, dime otro."));
+
+        var outcome = await AskAsync();
+
+        Assert.Empty(_reminders.All);
+        Assert.Empty(outcome.Answer!.Actions);
+        var toolResult = _ai.StepCalls[1].Messages.Last(m => m.Role == "tool").Content!;
+        Assert.Contains("futuro", toolResult);
+    }
+
+    [Fact]
+    public async Task A_due_at_that_is_not_a_date_is_refused_without_guessing_a_moment()
+    {
+        Script(
+            Calls(Call("set_reminder", new { text = "Cuando sea", due_at = "el viernes" })),
+            Text("No he podido interpretar la fecha."));
+
+        var outcome = await AskAsync();
+
+        Assert.Empty(_reminders.All);
+        Assert.Contains("ISO 8601", _ai.StepCalls[1].Messages.Last(m => m.Role == "tool").Content!);
+        Assert.Empty(outcome.Answer!.Actions);
+    }
+
+    [Fact]
+    public async Task An_invalid_recurrence_is_refused()
+    {
+        Script(
+            Calls(Call("set_reminder", new { text = "Cada dos martes", due_at = Iso(DateTime.UtcNow.AddDays(1)), recurrence = "el tercer martes" })),
+            Text("No puedo con esa repetición."));
+
+        await AskAsync();
+
+        Assert.Empty(_reminders.All);
+    }
+
+    [Fact]
+    public async Task The_tool_result_tells_the_model_the_moment_it_settled_on_in_local_time()
+    {
+        var moment = new DateTime(2027, 1, 8, 8, 0, 0, DateTimeKind.Utc);
+        Script(
+            Calls(Call("set_reminder", new { text = "Llamar al banco", due_at = Iso(moment) })),
+            Text("El viernes 8 de enero a las 09:00."));
+
+        await AskAsync();
+
+        var toolResult = _ai.StepCalls[1].Messages.Last(m => m.Role == "tool").Content!;
+        // 08:00 UTC in January is 09:00 in Madrid.
+        Assert.Contains("09:00", toolResult);
+        Assert.Contains("enero", toolResult);
+    }
+}
+
 internal sealed class DispatchingSender(
     CreateNoteCommandHandler createNote,
     AddTagCommandHandler addTag,
-    AddMemoryEntryCommandHandler addMemory) : ISender
+    AddMemoryEntryCommandHandler addMemory,
+    CreateReminderCommandHandler? createReminder = null) : ISender
 {
     public async Task<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken cancellationToken = default)
         => request switch
@@ -253,6 +475,7 @@ internal sealed class DispatchingSender(
             CreateNoteCommand c => (TResponse)(object)await createNote.Handle(c, cancellationToken),
             AddTagCommand c => (TResponse)(object)await addTag.Handle(c, cancellationToken),
             AddMemoryEntryCommand c => (TResponse)(object)await addMemory.Handle(c, cancellationToken),
+            CreateReminderCommand c when createReminder is not null => (TResponse)(object)await createReminder.Handle(c, cancellationToken),
             _ => throw new NotSupportedException(request.GetType().Name),
         };
 

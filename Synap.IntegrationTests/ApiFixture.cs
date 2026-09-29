@@ -39,11 +39,20 @@ public sealed class ApiFixture : IAsyncLifetime
 
     public string ConnectionString => _container.GetConnectionString();
 
+    /// <summary>The running host's services, for driving a background component on demand.</summary>
+    public IServiceProvider Services => _factory.Services;
+
     /// <summary>Every email the API "sends" during the test run - nothing leaves the process.</summary>
     public CapturingEmailSender Emails { get; } = new();
 
     /// <summary>Stands in for the Python AI service; unreachable-like unless a test scripts it.</summary>
     public ApiAiServiceFake Ai { get; } = new();
+
+    /// <summary>Every Telegram message the API "sends" during the test run - nothing leaves the process.</summary>
+    public CapturingTelegramSender Telegram { get; } = new();
+
+    /// <summary>The webhook secret the test host is configured with (assistant-reminders).</summary>
+    public const string TelegramWebhookSecret = "test-webhook-secret";
 
     public async Task InitializeAsync()
     {
@@ -55,6 +64,12 @@ public sealed class ApiFixture : IAsyncLifetime
             builder.UseSetting("ConnectionStrings:DefaultConnection", ConnectionString);
             builder.UseSetting("AiService:BaseUrl", "http://ai-service.invalid");
             builder.UseSetting("ForwardedHeaders:KnownProxies", KnownProxyIp);
+            // Reminders delivery on, but over the capturing sender below: the poller starts and the
+            // webhook accepts calls, while no request ever reaches api.telegram.org.
+            builder.UseSetting("Telegram:Enabled", "true");
+            builder.UseSetting("Telegram:BotToken", "test-bot-token");
+            builder.UseSetting("Telegram:WebhookSecret", TelegramWebhookSecret);
+            builder.UseSetting("Telegram:BotUsername", "SynapTestBot");
             builder.ConfigureServices(services => services.AddSingleton<IStartupFilter, FakeRemoteIpStartupFilter>());
             builder.ConfigureTestServices(services =>
             {
@@ -62,6 +77,8 @@ public sealed class ApiFixture : IAsyncLifetime
                 services.AddSingleton<IEmailSender>(Emails);
                 services.RemoveAll<IAiServiceClient>();
                 services.AddSingleton<IAiServiceClient>(Ai);
+                services.RemoveAll<ITelegramSender>();
+                services.AddSingleton<ITelegramSender>(Telegram);
             });
         });
 
@@ -170,6 +187,60 @@ public static class ApiClientExtensions
 
     public static Task<HttpResponseMessage> DeleteAsJsonAsync<T>(this HttpClient client, string url, T body)
         => client.SendAsync(new HttpRequestMessage(HttpMethod.Delete, url) { Content = JsonContent.Create(body) });
+}
+
+/// <summary>
+/// Stands in for the Telegram Bot API (assistant-reminders): records what would have been sent and
+/// which messages were edited, so tests can assert on delivery and on the confirmation a button
+/// press leaves behind.
+/// </summary>
+public sealed class CapturingTelegramSender : ITelegramSender
+{
+    private readonly List<TelegramMessage> _sent = [];
+    private readonly List<(string ChatId, long MessageId, string Text)> _edited = [];
+
+    public bool IsEnabled => true;
+
+    /// <summary>Set by a test to make the next sends fail, for the retry behaviour.</summary>
+    public bool FailSends { get; set; }
+
+    public IReadOnlyList<TelegramMessage> Sent
+    {
+        get { lock (_sent) return _sent.ToList(); }
+    }
+
+    public IReadOnlyList<(string ChatId, long MessageId, string Text)> Edited
+    {
+        get { lock (_edited) return _edited.ToList(); }
+    }
+
+    public IReadOnlyList<TelegramMessage> To(string chatId) => Sent.Where(m => m.ChatId == chatId).ToList();
+
+    public void Clear()
+    {
+        lock (_sent) _sent.Clear();
+        lock (_edited) _edited.Clear();
+    }
+
+    public Task<bool> SendAsync(TelegramMessage message, CancellationToken cancellationToken = default)
+    {
+        if (FailSends)
+        {
+            return Task.FromResult(false);
+        }
+
+        lock (_sent) _sent.Add(message);
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> EditAsync(string chatId, long messageId, string text, CancellationToken cancellationToken = default)
+    {
+        lock (_edited) _edited.Add((chatId, messageId, text));
+        return Task.FromResult(true);
+    }
+
+    public Task AnswerCallbackAsync(string callbackId, string? toast = null, CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
 }
 
 public sealed class CapturingEmailSender : IEmailSender

@@ -106,9 +106,14 @@ public sealed class AskAssistantQueryHandler : IQueryHandler<AskAssistantQuery, 
                 ActionsUnavailableReason.Scope, cancellationToken));
         }
 
+        // What the request carried, or what the user was last seen in - a client that sends no
+        // timezone still gets moments resolved somewhere sensible (assistant-reminders design.md Context).
+        var timezone = request.Timezone ?? user.Timezone;
+
         // The global conversation is the agent (assistant-agent-foundations design.md Decision 6);
         // when the model can't use tools, the same question is answered without actions.
-        var outcome = await _assistantAgent.RunAsync(userId, request.Question, history, memory, groqApiKey, user.GroqModel, cancellationToken);
+        var outcome = await _assistantAgent.RunAsync(
+            userId, request.Question, history, memory, groqApiKey, user.GroqModel, cancellationToken, timezone);
         if (outcome.Answer is not null)
         {
             return Result.Success(outcome.Answer);

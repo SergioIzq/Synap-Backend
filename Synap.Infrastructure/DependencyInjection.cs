@@ -9,13 +9,16 @@ using Synap.Infrastructure.Persistence;
 using Synap.Infrastructure.Persistence.Command;
 using Synap.Infrastructure.Persistence.Data.Memory;
 using Synap.Infrastructure.Persistence.Data.Notes;
+using Synap.Infrastructure.Persistence.Data.Reminders;
 using Synap.Infrastructure.Persistence.Data.Tags;
 using Synap.Infrastructure.Persistence.Data.Users;
 using Synap.Infrastructure.Services.Ai;
 using Synap.Infrastructure.Services.Auth;
 using Synap.Infrastructure.Services.Bookmarks;
 using Synap.Infrastructure.Services.Email;
+using Synap.Application.Features.Reminders;
 using Synap.Infrastructure.Services.Secrets;
+using Synap.Infrastructure.Services.Telegram;
 using Synap.Shared.Application.BackgroundJobs;
 using Synap.Shared.Application.Interfaces;
 
@@ -58,6 +61,9 @@ public static class DependencyInjection
         services.AddScoped<IMemoryEntryWriteRepository, MemoryEntryWriteRepository>();
         services.AddScoped<IMemoryEntryReadRepository, MemoryEntryReadRepository>();
 
+        services.AddScoped<IReminderWriteRepository, ReminderWriteRepository>();
+        services.AddScoped<IReminderReadRepository, ReminderReadRepository>();
+
         // Built eagerly: a missing or too-short JWT_SECRET_KEY stops the API at startup with a
         // clear message instead of failing every login with a 500.
         services.AddSingleton<IJwtTokenGenerator>(new JwtTokenGenerator(configuration));
@@ -65,6 +71,7 @@ public static class DependencyInjection
         services.AddMemoryCache();
 
         services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));
+        services.Configure<TelegramSettings>(configuration.GetSection(TelegramSettings.SectionName));
         services.AddSingleton<ISmtpTransport, MailKitSmtpTransport>();
         services.AddSingleton<IEmailSender, BackgroundEmailSender>();
         services.AddSingleton<IRecoveryRequestLimiter, MemoryRecoveryRequestLimiter>();
@@ -79,6 +86,17 @@ public static class DependencyInjection
         services.AddSingleton<BackgroundJobQueue>();
         services.AddSingleton<IBackgroundJobQueue>(sp => sp.GetRequiredService<BackgroundJobQueue>());
         services.AddHostedService<QueuedJobHostedService>();
+
+        // Reminder delivery (assistant-reminders design.md Decision 1): the service is scoped
+        // (it uses the DbContext); the poller resolves one per tick in its own scope.
+        services.AddScoped<ReminderDeliveryService>();
+        services.AddHostedService<ReminderPollerHostedService>();
+
+        services.AddHttpClient<ITelegramSender, TelegramSender>(client =>
+        {
+            client.BaseAddress = new Uri("https://api.telegram.org/");
+            client.Timeout = TimeSpan.FromSeconds(15);
+        });
 
         services.AddHttpClient<IBookmarkMetadataScraper, BookmarkMetadataScraper>(client =>
         {

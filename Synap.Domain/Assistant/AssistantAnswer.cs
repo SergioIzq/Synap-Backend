@@ -63,18 +63,27 @@ public enum AssistantAnswerStatus
 /// <summary>
 /// One action the assistant performed (assistant-agent-foundations design.md Decision 2):
 /// <see cref="NoteId"/>, <see cref="Title"/> and <see cref="Tags"/> for note actions,
-/// <see cref="Text"/> for a saved memory entry.
+/// <see cref="Text"/> for a saved memory entry or a reminder, and <see cref="DueAt"/> plus
+/// <see cref="Recurrence"/> for a reminder (assistant-reminders).
 /// </summary>
 public sealed record AssistantAction(
     AssistantActionType Type,
     Guid? NoteId = null,
     string? Title = null,
     IReadOnlyList<string>? Tags = null,
-    string? Text = null);
+    string? Text = null)
+{
+    /// <summary>Reminders only: the resolved moment in UTC, so the web app can show it in local time.</summary>
+    public DateTime? DueAt { get; init; }
+
+    /// <summary>Reminders only: the stored recurrence string, null for a one-off.</summary>
+    public string? Recurrence { get; init; }
+}
 
 public enum AssistantActionType
 {
     [JsonStringEnumMemberName("noteCreated")] NoteCreated,
     [JsonStringEnumMemberName("tagsAdded")] TagsAdded,
     [JsonStringEnumMemberName("memorySaved")] MemorySaved,
+    [JsonStringEnumMemberName("reminderCreated")] ReminderCreated,
 }

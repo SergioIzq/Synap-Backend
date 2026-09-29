@@ -7,6 +7,7 @@ using Synap.Domain;
 using Synap.Infrastructure.BackgroundJobs;
 using Synap.Infrastructure.Persistence;
 using Synap.Infrastructure.Persistence.Command;
+using Synap.Infrastructure.Persistence.Data.Memory;
 using Synap.Infrastructure.Persistence.Data.Notes;
 using Synap.Infrastructure.Persistence.Data.Tags;
 using Synap.Infrastructure.Persistence.Data.Users;
@@ -53,6 +54,9 @@ public static class DependencyInjection
         services.AddScoped<INoteReadRepository, NoteReadRepository>();
         services.AddScoped<INoteWriteRepository, NoteWriteRepository>();
         services.AddScoped<ITagWriteRepository, TagWriteRepository>();
+
+        services.AddScoped<IMemoryEntryWriteRepository, MemoryEntryWriteRepository>();
+        services.AddScoped<IMemoryEntryReadRepository, MemoryEntryReadRepository>();
 
         // Built eagerly: a missing or too-short JWT_SECRET_KEY stops the API at startup with a
         // clear message instead of failing every login with a 500.

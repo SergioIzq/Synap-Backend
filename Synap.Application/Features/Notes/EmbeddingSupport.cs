@@ -11,12 +11,12 @@ namespace Synap.Application.Features.Notes;
 /// </summary>
 internal static class EmbeddingSupport
 {
-    public static void EnqueueGeneration(IBackgroundJobQueue backgroundJobQueue, Guid noteId, Guid userId, string content)
+    public static void EnqueueGeneration(IBackgroundJobQueue backgroundJobQueue, Guid noteId, Guid userId, string? title, string content)
     {
         backgroundJobQueue.Enqueue(async (services, cancellationToken) =>
         {
             var aiServiceClient = services.GetRequiredService<IAiServiceClient>();
-            await aiServiceClient.GenerateEmbeddingAsync(noteId, userId, content, cancellationToken);
+            await aiServiceClient.GenerateEmbeddingAsync(noteId, userId, title, content, cancellationToken);
         });
     }
 }

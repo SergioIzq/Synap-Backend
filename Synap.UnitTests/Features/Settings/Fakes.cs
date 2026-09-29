@@ -89,14 +89,23 @@ internal sealed class FakeSecretProtector : ISecretProtector
 
 internal sealed class FakeAiServiceClient : IAiServiceClient
 {
-    public LlmModelsResult ModelsResult { get; set; } = new(LlmKeyStatus.Ok, ["model-a", "model-b"]);
+    public LlmModelsResult ModelsResult { get; set; } = new(LlmKeyStatus.Ok, [new LlmModel("model-a", true), new LlmModel("model-b", false)]);
     public AssistantAnswer Answer { get; set; } = new("respuesta", [], true, AssistantAnswerStatus.Ok);
 
     public List<string> ListModelsKeys { get; } = [];
     public List<(Guid UserId, string Key, string? Model)> AskCalls { get; } = [];
     public List<(AssistantScope? Scope, IReadOnlyList<AssistantTurn>? History)> AskScopes { get; } = [];
+    public List<IReadOnlyList<string>?> AskMemories { get; } = [];
+    public List<ActionsUnavailableReason?> AskActionsUnavailable { get; } = [];
 
-    public Task GenerateEmbeddingAsync(Guid noteId, Guid userId, string content, CancellationToken cancellationToken = default)
+    /// <summary>Scripted answers for the assistant's tool loop, returned in order; Unavailable once exhausted.</summary>
+    public Queue<AgentStepResult> Steps { get; } = new();
+    public List<(IReadOnlyList<AgentMessage> Messages, IReadOnlyList<AgentTool>? Tools, string Key, string? Model)> StepCalls { get; } = [];
+
+    public Func<Guid, string, int, IReadOnlyList<NoteSearchHit>> Search { get; set; } = (_, _, _) => [];
+    public List<(Guid UserId, string Query, int Limit)> SearchCalls { get; } = [];
+
+    public Task GenerateEmbeddingAsync(Guid noteId, Guid userId, string? title, string content, CancellationToken cancellationToken = default)
         => Task.CompletedTask;
 
     public Task<IReadOnlyList<RelatedNote>> GetRelatedNotesAsync(Guid noteId, Guid userId, CancellationToken cancellationToken = default)
@@ -109,11 +118,33 @@ internal sealed class FakeAiServiceClient : IAiServiceClient
         string? groqModel,
         AssistantScope? scope = null,
         IReadOnlyList<AssistantTurn>? history = null,
+        IReadOnlyList<string>? memory = null,
+        ActionsUnavailableReason? actionsUnavailable = null,
         CancellationToken cancellationToken = default)
     {
         AskCalls.Add((userId, groqApiKey, groqModel));
         AskScopes.Add((scope, history));
+        AskMemories.Add(memory);
+        AskActionsUnavailable.Add(actionsUnavailable);
         return Task.FromResult(Answer);
+    }
+
+    public Task<AgentStepResult> StepAsync(
+        IReadOnlyList<AgentMessage> messages,
+        IReadOnlyList<AgentTool>? tools,
+        string groqApiKey,
+        string? groqModel,
+        CancellationToken cancellationToken = default)
+    {
+        // A snapshot: the agent keeps appending to its own list.
+        StepCalls.Add((messages.ToList(), tools, groqApiKey, groqModel));
+        return Task.FromResult(Steps.Count > 0 ? Steps.Dequeue() : AgentStepResult.Failed(AgentStepStatus.Unavailable));
+    }
+
+    public Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, CancellationToken cancellationToken = default)
+    {
+        SearchCalls.Add((userId, query, limit));
+        return Task.FromResult(Search(userId, query, limit));
     }
 
     public Task<LlmModelsResult> ListModelsAsync(string groqApiKey, CancellationToken cancellationToken = default)
@@ -126,6 +157,8 @@ internal sealed class FakeAiServiceClient : IAiServiceClient
 internal sealed class FakeNoteRepository : INoteWriteRepository
 {
     private readonly List<Note> _notes = [];
+
+    public IReadOnlyList<Note> All => _notes;
 
     public Note Add(Note note)
     {

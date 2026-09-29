@@ -155,3 +155,138 @@ async def test_tag_scope_line_names_the_tag():
     )
 
     assert "#docker" in seen["messages"][0]["content"]
+
+
+# --- chat_step (assistant-agent-foundations task 4.1) ---------------------------------------
+
+from app.llm.provider import LlmToolCallFailedError, LlmToolsUnsupportedError  # noqa: E402
+
+TOOLS = [{"name": "search_notes", "description": "Busca", "parameters": {"type": "object", "properties": {}}}]
+
+
+def _tool_calls_response(*calls) -> httpx.Response:
+    return httpx.Response(200, json={"choices": [{"message": {"content": None, "tool_calls": [
+        {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
+        for call_id, name, arguments in calls
+    ]}}]})
+
+
+@pytest.mark.asyncio
+async def test_chat_step_returns_text():
+    result = await _provider(_chat_ok).chat_step([{"role": "user", "content": "hola"}], TOOLS, SECRET_KEY, "m")
+
+    assert result.text == "respuesta"
+    assert result.tool_calls == []
+
+
+@pytest.mark.asyncio
+async def test_chat_step_parses_tool_calls_and_flags_invalid_json():
+    handler = lambda request: _tool_calls_response(  # noqa: E731
+        ("c1", "search_notes", '{"query": "docker"}'), ("c2", "search_notes", "{not json")
+    )
+
+    result = await _provider(handler).chat_step([{"role": "user", "content": "q"}], TOOLS, SECRET_KEY, "m")
+
+    assert result.text is None
+    first, second = result.tool_calls
+    assert (first.id, first.name, first.arguments, first.arguments_error) == ("c1", "search_notes", {"query": "docker"}, None)
+    assert (second.arguments, second.arguments_error) == (None, "invalid_json")
+
+
+@pytest.mark.asyncio
+async def test_chat_step_translates_neutral_messages_and_tools():
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return _chat_ok(request)
+
+    messages = [
+        {"role": "user", "content": "etiqueta mi nota"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "name": "search_notes", "arguments": {"query": "nota"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "[]"},
+    ]
+    await _provider(handler).chat_step(messages, TOOLS, SECRET_KEY, "m")
+
+    assert seen["tools"] == [{"type": "function", "function": TOOLS[0]}]
+    assistant = seen["messages"][1]
+    assert assistant["tool_calls"] == [
+        {"id": "c1", "type": "function", "function": {"name": "search_notes", "arguments": '{"query": "nota"}'}}
+    ]
+    assert seen["messages"][2] == {"role": "tool", "content": "[]", "tool_call_id": "c1"}
+
+
+@pytest.mark.asyncio
+async def test_chat_step_without_tools_sends_none():
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return _chat_ok(request)
+
+    await _provider(handler).chat_step([{"role": "user", "content": "q"}], None, SECRET_KEY, "m")
+
+    assert "tools" not in seen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "error", "expected"),
+    [
+        (400, {"message": "`tools` is not supported with this model", "type": "invalid_request_error"}, LlmToolsUnsupportedError),
+        (400, {"message": "Failed to call a function.", "code": "tool_use_failed"}, LlmToolCallFailedError),
+        (400, {"message": "context length exceeded"}, LlmProviderUnavailableError),
+        (401, {}, LlmInvalidCredentialsError),
+        (429, {}, LlmRateLimitedError),
+        (503, {}, LlmProviderUnavailableError),
+    ],
+)
+async def test_chat_step_maps_errors(status_code, error, expected):
+    provider = _provider(lambda request: httpx.Response(status_code, json={"error": error}))
+
+    with pytest.raises(expected):
+        await provider.chat_step([{"role": "user", "content": "q"}], TOOLS, SECRET_KEY, "m")
+
+
+# --- memory (assistant-agent-foundations task 4.3) ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_memory_goes_after_the_instructions_and_before_the_history():
+    seen = {}
+    history = [HistoryTurn("¿y nginx?", "Lo configuraste así.")]
+
+    await _provider(_capture_messages(seen)).generate_answer(
+        "¿y cómo lo reinicio?", "ctx", SECRET_KEY, "m", history=history, memory=["prefiero respuestas cortas", "uso Ubuntu"]
+    )
+
+    system = seen["messages"][0]["content"]
+    assert system.startswith(SYSTEM_PROMPT)
+    assert system.index("follow-up") < system.index("- prefiero respuestas cortas") < system.index("- uso Ubuntu")
+    assert seen["messages"][1] == {"role": "user", "content": "¿y nginx?"}
+    assert seen["messages"][-1]["content"].endswith("Question: ¿y cómo lo reinicio?")
+
+
+@pytest.mark.asyncio
+async def test_empty_memory_leaves_the_prompt_as_before():
+    with_empty, without = {}, {}
+
+    await _provider(_capture_messages(with_empty)).generate_answer("¿q?", "ctx", SECRET_KEY, "m", memory=[])
+    await _provider(_capture_messages(without)).generate_answer("¿q?", "ctx", SECRET_KEY, "m")
+
+    assert with_empty["messages"] == without["messages"]
+    assert without["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reason", "hint"), [("scope", "general conversation"), ("model", "current model can't perform actions")])
+async def test_actions_unavailable_explains_why_before_the_memory(reason, hint):
+    seen = {}
+
+    await _provider(_capture_messages(seen)).generate_answer(
+        "apúntame algo", "ctx", SECRET_KEY, "m", actions_unavailable=reason, memory=["uso Ubuntu"]
+    )
+
+    system = seen["messages"][0]["content"]
+    assert hint in system
+    assert system.index(hint) < system.index("- uso Ubuntu")

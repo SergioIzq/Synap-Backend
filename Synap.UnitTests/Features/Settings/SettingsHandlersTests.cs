@@ -1,5 +1,9 @@
 using Microsoft.Extensions.Options;
+using Synap.Application.Features.Assistant.Agent;
 using Synap.Application.Features.Assistant.Queries;
+using Synap.Application.Features.Memory.Commands;
+using Synap.Application.Features.Notes.Commands.AddTag;
+using Synap.Application.Features.Notes.Commands.Create;
 using Synap.Application.Features.Settings;
 using Synap.Application.Features.Settings.Commands;
 using Synap.Application.Features.Settings.Queries;
@@ -132,7 +136,7 @@ public class SettingsHandlersTests
 
         var result = await new ListGroqModelsQueryHandler(_users, _context, _protector, _ai).Handle(new ListGroqModelsQuery(), default);
 
-        Assert.Equal(["model-a", "model-b"], result.Value);
+        Assert.Equal([new LlmModel("model-a", true), new LlmModel("model-b", false)], result.Value);
         Assert.Equal([ValidKey], _ai.ListModelsKeys);
     }
 
@@ -189,7 +193,16 @@ public class SettingsHandlersTests
 
     // ---- AskAssistant ----
 
-    private AskAssistantQueryHandler AskHandler() => new(_ai, _context, _users, _protector, new FakeNoteRepository());
+    private AskAssistantQueryHandler AskHandler()
+    {
+        var notes = new FakeNoteRepository();
+        var memory = new Memory.FakeMemoryRepository();
+        var sender = new Assistant.DispatchingSender(
+            new CreateNoteCommandHandler(notes, new Assistant.FakeTagRepository(), _unitOfWork, _context, new Assistant.NoopJobQueue()),
+            new AddTagCommandHandler(notes, new Assistant.FakeTagRepository(), _unitOfWork, _context),
+            new AddMemoryEntryCommandHandler(memory, _unitOfWork, _context));
+        return new(_ai, _context, _users, _protector, notes, memory, new AssistantAgent(_ai, sender, new Assistant.NotesView(notes)));
+    }
 
     [Fact]
     public async Task Ask_without_key_returns_key_missing_and_never_calls_the_ai_service()
@@ -200,6 +213,7 @@ public class SettingsHandlersTests
         Assert.Equal(AssistantAnswerStatus.KeyMissing, result.Value.Status);
         Assert.False(result.Value.Grounded);
         Assert.Empty(_ai.AskCalls);
+        Assert.Empty(_ai.StepCalls);
     }
 
     [Fact]
@@ -208,9 +222,13 @@ public class SettingsHandlersTests
         GiveUserKey();
         _user.SetGroqModel("model-b");
 
+        // A model without tools, so the question also takes the plain answer path.
+        _ai.Steps.Enqueue(AgentStepResult.Failed(AgentStepStatus.ToolsUnsupported));
+
         var result = await AskHandler().Handle(new AskAssistantQuery("¿qué?"), default);
 
         Assert.Equal(AssistantAnswerStatus.Ok, result.Value.Status);
+        Assert.Equal((ValidKey, "model-b"), (_ai.StepCalls.Single().Key, _ai.StepCalls.Single().Model));
         Assert.Equal([(_user.Id.Value, ValidKey, (string?)"model-b")], _ai.AskCalls);
     }
 

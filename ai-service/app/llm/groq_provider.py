@@ -1,12 +1,20 @@
+import json
+from typing import Any
+
 import httpx
 
 from app.llm.provider import (
+    ActionsUnavailable,
     AnswerScope,
     HistoryTurn,
     LlmInvalidCredentialsError,
     LlmProvider,
     LlmProviderUnavailableError,
     LlmRateLimitedError,
+    LlmToolCallFailedError,
+    LlmToolsUnsupportedError,
+    StepResult,
+    ToolCall,
 )
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
@@ -20,6 +28,9 @@ SYSTEM_PROMPT = (
 
 
 
+HISTORY_INSTRUCTIONS = "Earlier messages of this conversation are included for follow-up questions."
+
+
 def _scope_instructions(scope: AnswerScope) -> str:
     if scope.kind == "note":
         text = f'The user is asking about one specific note of theirs, "{scope.label}", included below. Answer about that note.'
@@ -29,16 +40,52 @@ def _scope_instructions(scope: AnswerScope) -> str:
         text = f"The notes below are the user's notes tagged #{scope.label}. Answer about what they contain."
         if scope.partial:
             text += " They don't all fit: only the ones most related to the question are included."
-    return text + " Earlier messages of this conversation are included for follow-up questions."
+    return f"{text} {HISTORY_INSTRUCTIONS}"
+
+
+ACTIONS_UNAVAILABLE_INSTRUCTIONS: dict[str, str] = {
+    "scope": (
+        "In this conversation you can't create notes, add tags or remember facts. If the user asks for that, "
+        "tell them to ask from the assistant's general conversation (without a note or tag selected), "
+        "and that memories can also be added in Settings > Memoria."
+    ),
+    "model": (
+        "With the model the user chose you can't create notes, add tags or remember facts. If the user asks for that, "
+        "tell them that the current model can't perform actions and that they can choose one that can in Settings; "
+        "memories can also be added in Settings > Memoria."
+    ),
+}
+
+
+def memory_block(memory: list[str] | None) -> str:
+    """The user's memory entries (specs/assistant-memory), appended to the fixed system
+    instructions - after them, so the prefix stays the same within a conversation, and before
+    the history (assistant-agent-foundations design.md Decision 8). Empty when there are none."""
+    if not memory:
+        return ""
+    facts = "\n".join(f"- {fact}" for fact in memory)
+    return f"\n\nWhat you know about the user (facts they asked you to remember - take them into account, they are not questions):\n{facts}"
 
 
 def build_messages(
-    question: str, context: str, history: list[HistoryTurn] | None = None, scope: AnswerScope | None = None
+    question: str,
+    context: str,
+    history: list[HistoryTurn] | None = None,
+    scope: AnswerScope | None = None,
+    memory: list[str] | None = None,
+    actions_unavailable: ActionsUnavailable | None = None,
 ) -> list[dict]:
-    """System prompt, then earlier turns (without their notes - the notes are sent once, with the
-    new question), then the new question with the notes."""
-    system = SYSTEM_PROMPT if scope is None else f"{SYSTEM_PROMPT} {_scope_instructions(scope)}"
-    messages = [{"role": "system", "content": system}]
+    """System prompt (plus the user's memory), then earlier turns (without their notes - the
+    notes are sent once, with the new question), then the new question with the notes."""
+    if scope is not None:
+        system = f"{SYSTEM_PROMPT} {_scope_instructions(scope)}"
+    elif history:
+        system = f"{SYSTEM_PROMPT} {HISTORY_INSTRUCTIONS}"
+    else:
+        system = SYSTEM_PROMPT
+    if actions_unavailable:
+        system = f"{system} {ACTIONS_UNAVAILABLE_INSTRUCTIONS[actions_unavailable]}"
+    messages = [{"role": "system", "content": system + memory_block(memory)}]
     for turn in history or []:
         messages.append({"role": "user", "content": turn.question})
         messages.append({"role": "assistant", "content": turn.answer})
@@ -73,6 +120,8 @@ class GroqProvider(LlmProvider):
         *,
         history: list[HistoryTurn] | None = None,
         scope: AnswerScope | None = None,
+        memory: list[str] | None = None,
+        actions_unavailable: ActionsUnavailable | None = None,
     ) -> str:
 
         try:
@@ -82,7 +131,7 @@ class GroqProvider(LlmProvider):
                     headers={"Authorization": f"Bearer {api_key}"},
                     json={
                         "model": model,
-                        "messages": build_messages(question, context, history, scope),
+                        "messages": build_messages(question, context, history, scope, memory, actions_unavailable),
                         "temperature": 0.2,
                     },
                 )
@@ -94,6 +143,32 @@ class GroqProvider(LlmProvider):
         except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
             # Only the exception type is kept - never str(exc), which could carry request details.
             raise LlmProviderUnavailableError(type(exc).__name__) from None
+
+    async def chat_step(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, api_key: str, model: str
+    ) -> StepResult:
+        body: dict[str, Any] = {"model": model, "messages": [_to_groq_message(m) for m in messages], "temperature": 0.2}
+        if tools:
+            body["tools"] = [{"type": "function", "function": tool} for tool in tools]
+
+        try:
+            async with self._client(timeout=30.0) as client:
+                response = await client.post(
+                    "/chat/completions", headers={"Authorization": f"Bearer {api_key}"}, json=body
+                )
+                if tools and response.status_code == 400:
+                    _raise_for_tool_error(response)
+                _raise_for_provider_status(response)
+                message = response.json()["choices"][0]["message"]
+        except (LlmInvalidCredentialsError, LlmRateLimitedError, LlmToolsUnsupportedError, LlmToolCallFailedError):
+            raise
+        except (httpx.HTTPError, KeyError, IndexError, ValueError, TypeError) as exc:
+            raise LlmProviderUnavailableError(type(exc).__name__) from None
+
+        return StepResult(
+            text=message.get("content") or None,
+            tool_calls=[_from_groq_tool_call(call) for call in message.get("tool_calls") or []],
+        )
 
     async def list_models(self, api_key: str) -> list[str]:
         try:
@@ -111,6 +186,49 @@ class GroqProvider(LlmProvider):
             for model in models
             if model.get("active", True) and not any(marker in model["id"].lower() for marker in NON_CHAT_MODEL_MARKERS)
         )
+
+
+def _to_groq_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Provider-neutral message (see LlmProvider.chat_step) to OpenAI-style: tool call
+    arguments travel as a JSON string."""
+    converted = {"role": message["role"], "content": message.get("content") or ""}
+    if message.get("tool_calls"):
+        converted["tool_calls"] = [
+            {
+                "id": call["id"],
+                "type": "function",
+                "function": {"name": call["name"], "arguments": json.dumps(call.get("arguments") or {}, ensure_ascii=False)},
+            }
+            for call in message["tool_calls"]
+        ]
+    if message.get("tool_call_id"):
+        converted["tool_call_id"] = message["tool_call_id"]
+    return converted
+
+
+def _from_groq_tool_call(call: dict[str, Any]) -> ToolCall:
+    function = call["function"]
+    try:
+        arguments = json.loads(function.get("arguments") or "{}")
+    except json.JSONDecodeError:
+        return ToolCall(id=call["id"], name=function["name"], arguments=None, arguments_error="invalid_json")
+    if not isinstance(arguments, dict):
+        return ToolCall(id=call["id"], name=function["name"], arguments=None, arguments_error="not_an_object")
+    return ToolCall(id=call["id"], name=function["name"], arguments=arguments)
+
+
+def _raise_for_tool_error(response: httpx.Response) -> None:
+    """A 400 caused by the tools themselves: the model can't take them, or it produced a call
+    Groq could not parse (`tool_use_failed`). Any other 400 is left to the generic mapping."""
+    try:
+        error = response.json().get("error") or {}
+    except ValueError:
+        return
+    if error.get("code") == "tool_use_failed":
+        raise LlmToolCallFailedError("The model produced an invalid tool call")
+    message = str(error.get("message", "")).lower()
+    if "tool" in message:
+        raise LlmToolsUnsupportedError("The model does not support tools")
 
 
 def _raise_for_provider_status(response: httpx.Response) -> None:

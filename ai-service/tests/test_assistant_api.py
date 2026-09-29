@@ -36,15 +36,18 @@ class FakeProvider(LlmProvider):
             raise self.error
         return ["model-a", "model-b"]
 
+    async def chat_step(self, messages, tools, api_key, model):
+        raise NotImplementedError
+
 
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(assistant_api, "embed_text", lambda text: [0.0])
 
-    async def fake_search(user_id, embedding):
+    async def fake_search(user_id, query_text, embedding, limit=5):
         return [{"id": "n1", "title": "Nota", "content": "reinicia", "similarity": 0.9}]
 
-    monkeypatch.setattr(assistant_api.repository, "search_similar", fake_search)
+    monkeypatch.setattr(assistant_api, "hybrid_search", fake_search)
     # Not a context manager on purpose: skips the lifespan (DB pool + embedding model preload).
     yield TestClient(app)
     app.dependency_overrides.clear()
@@ -71,13 +74,13 @@ def test_ask_untitled_source_uses_content_preview(client, monkeypatch):
     _use(FakeProvider())
     long_content = "Reinicia   el servidor " + "x" * 100
 
-    async def untitled(user_id, embedding):
+    async def untitled(user_id, query_text, embedding, limit=5):
         return [
             {"id": "n1", "title": None, "content": long_content, "similarity": 0.9},
             {"id": "n2", "title": "  ", "content": "corto", "similarity": 0.8},
         ]
 
-    monkeypatch.setattr(assistant_api.repository, "search_similar", untitled)
+    monkeypatch.setattr(assistant_api, "hybrid_search", untitled)
 
     sources = client.post("/internal/assistant/ask", json=ASK_BODY, headers=HEADERS).json()["sources"]
 
@@ -96,17 +99,18 @@ def test_ask_uses_chosen_model(client):
 
 
 def test_ask_no_relevant_notes(client, monkeypatch):
-    _use(FakeProvider())
+    provider = _use(FakeProvider())
 
-    async def no_matches(user_id, embedding):
+    async def no_matches(user_id, query_text, embedding, limit=5):
         return []
 
-    monkeypatch.setattr(assistant_api.repository, "search_similar", no_matches)
+    monkeypatch.setattr(assistant_api, "hybrid_search", no_matches)
 
     body = client.post("/internal/assistant/ask", json=ASK_BODY, headers=HEADERS).json()
 
     assert body["status"] == "no_relevant_notes"
     assert body["answer"] == assistant_api.NOTHING_RELEVANT_MESSAGE
+    assert provider.calls == []
 
 
 @pytest.mark.parametrize(
@@ -140,7 +144,26 @@ def test_models_ok(client):
 
     body = client.post("/internal/llm/models", json={"api_key": "gsk_x"}, headers=HEADERS).json()
 
-    assert body == {"status": "ok", "models": ["model-a", "model-b"]}
+    assert body == {
+        "status": "ok",
+        "models": [{"id": "model-a", "supports_actions": False}, {"id": "model-b", "supports_actions": False}],
+    }
+
+
+def test_models_flag_tool_capable_ones(client, monkeypatch):
+    monkeypatch.setattr(settings, "tool_capable_models", ["model-b", "fam/"])
+
+    class Provider(FakeProvider):
+        async def list_models(self, api_key):
+            return ["fam/big", "model-a", "model-b", "model-b2"]
+
+    _use(Provider())
+
+    body = client.post("/internal/llm/models", json={"api_key": "gsk_x"}, headers=HEADERS).json()
+
+    assert {m["id"]: m["supports_actions"] for m in body["models"]} == {
+        "fam/big": True, "model-a": False, "model-b": True, "model-b2": True,
+    }
 
 
 @pytest.mark.parametrize(
@@ -180,13 +203,13 @@ def _note(id_, content, note_type="Text", title="Nota"):
 @pytest.fixture
 def scoped(client, monkeypatch):
     """Records which repository calls a scoped question makes - the global search must not run."""
-    seen = {"search_similar": 0, "embedded": []}
+    seen = {"search": 0, "embedded": []}
 
-    async def search_similar(user_id, embedding):
-        seen["search_similar"] += 1
+    async def search(user_id, query_text, embedding, limit=5):
+        seen["search"] += 1
         return []
 
-    monkeypatch.setattr(assistant_api.repository, "search_similar", search_similar)
+    monkeypatch.setattr(assistant_api, "hybrid_search", search)
     monkeypatch.setattr(assistant_api, "embed_text", lambda text: seen["embedded"].append(text) or [0.0])
     return seen
 
@@ -210,7 +233,7 @@ def test_note_scope_answers_from_that_note_only(client, scoped, monkeypatch):
     assert body["scope"] == {"note_id": NOTE_ID}
     assert "Reinicia el contenedor" in provider.last["context"]
     assert provider.last["scope"].kind == "note"
-    assert scoped == {"search_similar": 0, "embedded": []}
+    assert scoped == {"search": 0, "embedded": []}
 
 
 def test_note_scope_long_note_is_partial(client, scoped, monkeypatch):
@@ -347,15 +370,52 @@ def test_scoped_history_is_capped_to_the_last_three_turns(client, scoped, monkey
     assert all(len(t.answer) == assistant_api.MAX_HISTORY_ANSWER_CHARS for t in turns)
 
 
-def test_unscoped_question_ignores_history_and_keeps_its_response_shape(client):
+def test_unscoped_question_uses_its_history_and_keeps_its_response_shape(client):
+    """assistant-agent-foundations: the global conversation has follow-ups too."""
     provider = _use(FakeProvider())
 
     body = client.post(
         "/internal/assistant/ask", json={**ASK_BODY, "history": [{"question": "q", "answer": "a"}]}, headers=HEADERS
     ).json()
 
-    assert "history" not in provider.last and "scope" not in provider.last
+    assert [(t.question, t.answer) for t in provider.last["history"]] == [("q", "a")]
+    assert "scope" not in provider.last
     assert set(body) == {"answer", "source_note_ids", "sources", "grounded", "status"}
+
+
+def test_unscoped_question_without_history_or_memory_sends_neither(client):
+    provider = _use(FakeProvider())
+
+    client.post("/internal/assistant/ask", json=ASK_BODY, headers=HEADERS)
+
+    assert set(provider.last) == {"question", "context"}
+
+
+MEMORY = ["  prefiero respuestas cortas ", "", "x" * 500, *[f"m{i}" for i in range(30)]]
+
+
+def test_memory_is_passed_capped_for_global_questions(client):
+    provider = _use(FakeProvider())
+
+    client.post("/internal/assistant/ask", json={**ASK_BODY, "memory": MEMORY}, headers=HEADERS)
+
+    memory = provider.last["memory"]
+    assert memory[0] == "prefiero respuestas cortas"
+    assert len(memory[1]) == assistant_api.MAX_MEMORY_ENTRY_CHARS
+    assert len(memory) <= assistant_api.MAX_MEMORY_ENTRIES
+
+
+def test_memory_is_passed_for_scoped_questions(client, scoped, monkeypatch):
+    provider = _use(FakeProvider())
+
+    async def get_owned_note(note_id, user_id):
+        return _note(NOTE_ID, "contenido")
+
+    monkeypatch.setattr(assistant_api.repository, "get_owned_note", get_owned_note)
+
+    client.post("/internal/assistant/ask", json={**ASK_BODY, "scope_note_id": NOTE_ID, "memory": ["uso Ubuntu"]}, headers=HEADERS)
+
+    assert provider.last["memory"] == ["uso Ubuntu"]
 
 
 def test_both_scopes_at_once_is_rejected(client):
@@ -364,5 +424,47 @@ def test_both_scopes_at_once_is_rejected(client):
     response = client.post(
         "/internal/assistant/ask", json={**ASK_BODY, "scope_note_id": NOTE_ID, "scope_tag": "x"}, headers=HEADERS
     )
+
+    assert response.status_code == 422
+
+
+# --- answering without actions (assistant-agent-foundations task 6.3) -----------------------
+
+
+def test_without_action_support_a_question_with_nothing_relevant_still_reaches_the_model(client, monkeypatch):
+    provider = _use(FakeProvider())
+
+    async def no_matches(user_id, query_text, embedding, limit=5):
+        return []
+
+    monkeypatch.setattr(assistant_api, "hybrid_search", no_matches)
+
+    body = client.post(
+        "/internal/assistant/ask", json={**ASK_BODY, "question": "apúntame que mañana llamo al fontanero", "actions_unavailable": "model"}, headers=HEADERS
+    ).json()
+
+    assert body["status"] == "ok"
+    assert body["grounded"] is False and body["sources"] == []
+    assert provider.last["context"] == assistant_api.NO_NOTES_CONTEXT
+    assert provider.last["actions_unavailable"] == "model"
+
+
+def test_scoped_questions_carry_the_scope_reason(client, scoped, monkeypatch):
+    provider = _use(FakeProvider())
+
+    async def get_owned_note(note_id, user_id):
+        return _note(NOTE_ID, "contenido")
+
+    monkeypatch.setattr(assistant_api.repository, "get_owned_note", get_owned_note)
+
+    client.post("/internal/assistant/ask", json={**ASK_BODY, "scope_note_id": NOTE_ID, "actions_unavailable": "scope"}, headers=HEADERS)
+
+    assert provider.last["actions_unavailable"] == "scope"
+
+
+def test_unknown_actions_reason_is_rejected(client):
+    _use(FakeProvider())
+
+    response = client.post("/internal/assistant/ask", json={**ASK_BODY, "actions_unavailable": "other"}, headers=HEADERS)
 
     assert response.status_code == 422

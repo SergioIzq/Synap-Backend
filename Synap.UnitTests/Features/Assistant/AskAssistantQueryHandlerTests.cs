@@ -1,14 +1,21 @@
+using Synap.Application.Features.Assistant.Agent;
 using Synap.Application.Features.Assistant.Queries;
+using Synap.Application.Features.Memory.Commands;
+using Synap.Application.Features.Notes.Commands.AddTag;
+using Synap.Application.Features.Notes.Commands.Create;
 using Synap.Domain;
 using Synap.Shared.Domain.ValueObjects.Ids;
 using Synap.UnitTests.Domain;
+using Synap.UnitTests.Features.Memory;
 using Synap.UnitTests.Features.Settings;
+using System.Text.Json;
 
 namespace Synap.UnitTests.Features.Assistant;
 
 /// <summary>
 /// scoped-assistant tasks 2.1/2.2 - scope validation, ownership and bookmark checks before the AI
-/// service is ever called, and the short history only for scoped questions.
+/// service is ever called; assistant-agent-foundations task 6.3 - which path answers each question,
+/// with the conversation's history and the user's memory.
 /// </summary>
 public class AskAssistantQueryHandlerTests
 {
@@ -18,6 +25,7 @@ public class AskAssistantQueryHandlerTests
     private readonly FakeSecretProtector _protector = new();
     private readonly FakeAiServiceClient _ai = new();
     private readonly FakeNoteRepository _notes = new();
+    private readonly FakeMemoryRepository _memory = new();
     private readonly User _user = UserGroqSettingsTests.NewUser();
 
     public AskAssistantQueryHandlerTests()
@@ -26,7 +34,20 @@ public class AskAssistantQueryHandlerTests
         _user.SetGroqApiKey(_protector.Protect(Key), Key[^4..]);
     }
 
-    private AskAssistantQueryHandler Handler() => new(_ai, new FakeUserContext(_user.Id.Value), _users, _protector, _notes);
+    private AskAssistantQueryHandler Handler()
+    {
+        var context = new FakeUserContext(_user.Id.Value);
+        var unitOfWork = new FakeUnitOfWork();
+        var tags = new FakeTagRepository();
+        var sender = new DispatchingSender(
+            new CreateNoteCommandHandler(_notes, tags, unitOfWork, context, new NoopJobQueue()),
+            new AddTagCommandHandler(_notes, tags, unitOfWork, context),
+            new AddMemoryEntryCommandHandler(_memory, unitOfWork, context));
+        var agent = new AssistantAgent(_ai, sender, new NotesView(_notes));
+        return new(_ai, context, _users, _protector, _notes, _memory, agent);
+    }
+
+    private void Remember(string text) => _memory.Add(MemoryEntry.Create(UserId.CreateFromDatabase(_user.Id.Value), text).Value);
 
     private Note NoteOf(User owner, NoteType type = NoteType.Text)
         => _notes.Add(Note.Create(UserId.CreateFromDatabase(owner.Id.Value), type, "CORS", "Reinicia la API."));
@@ -113,11 +134,63 @@ public class AskAssistantQueryHandlerTests
     }
 
     [Fact]
-    public async Task Unscoped_question_drops_any_history()
+    public async Task Scoped_questions_carry_memory_and_never_perform_actions()
     {
-        var result = await Handler().Handle(new AskAssistantQuery("¿qué?", null, [new AssistantTurn("antes", "respuesta")]), default);
+        Remember("prefiero respuestas cortas");
+
+        await Handler().Handle(new AskAssistantQuery("apúntame algo", new AssistantScope(null, "docker")), default);
+
+        Assert.Equal(["prefiero respuestas cortas"], Assert.Single(_ai.AskMemories)!);
+        Assert.Equal(ActionsUnavailableReason.Scope, Assert.Single(_ai.AskActionsUnavailable));
+        Assert.Empty(_ai.StepCalls);
+    }
+
+    [Fact]
+    public async Task Global_question_is_answered_by_the_agent_with_history_and_memory()
+    {
+        Remember("uso Ubuntu");
+        _ai.Steps.Enqueue(new AgentStepResult(AgentStepStatus.Ok, "Con systemctl restart nginx.", []));
+
+        var result = await Handler().Handle(new AskAssistantQuery("¿y cómo lo reinicio?", null, [new AssistantTurn("¿cómo configuré nginx?", "Así.")]), default);
+
+        Assert.Equal("Con systemctl restart nginx.", result.Value.Answer);
+        Assert.Empty(result.Value.Actions);
+        Assert.Empty(_ai.AskCalls);
+        var messages = Assert.Single(_ai.StepCalls).Messages;
+        Assert.Contains("- uso Ubuntu", messages[0].Content);
+        Assert.Equal("¿cómo configuré nginx?", messages[1].Content);
+        Assert.Equal(Key, _ai.StepCalls[0].Key);
+    }
+
+    [Fact]
+    public async Task Global_question_without_action_support_is_answered_without_actions()
+    {
+        Remember("uso Ubuntu");
+        _ai.Steps.Enqueue(AgentStepResult.Failed(AgentStepStatus.ToolsUnsupported));
+
+        var result = await Handler().Handle(new AskAssistantQuery("apúntame algo", null, [new AssistantTurn("antes", "respuesta")]), default);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal((null, null), Assert.Single(_ai.AskScopes));
+        var (scope, history) = Assert.Single(_ai.AskScopes);
+        Assert.Null(scope);
+        Assert.Equal(["antes"], history!.Select(t => t.Question));
+        Assert.Equal(["uso Ubuntu"], _ai.AskMemories.Single()!);
+        Assert.Equal(ActionsUnavailableReason.Model, _ai.AskActionsUnavailable.Single());
+    }
+
+    [Fact]
+    public async Task Actions_done_before_falling_back_are_reported_with_the_answer()
+    {
+        _ai.Steps.Enqueue(new AgentStepResult(AgentStepStatus.Ok, null,
+            [new AgentToolCall("c1", "remember", JsonSerializer.SerializeToElement(new { text = "uso Ubuntu" }))]));
+        _ai.Steps.Enqueue(AgentStepResult.Failed(AgentStepStatus.ToolCallFailed));
+        _ai.Steps.Enqueue(AgentStepResult.Failed(AgentStepStatus.ToolCallFailed));
+
+        var result = await Handler().Handle(new AskAssistantQuery("recuerda que uso Ubuntu y apunta algo"), default);
+
+        Assert.Equal("respuesta", result.Value.Answer);
+        Assert.Equal(AssistantActionType.MemorySaved, Assert.Single(result.Value.Actions).Type);
+        Assert.Equal(3, _ai.StepCalls.Count);
+        Assert.Single(_ai.AskCalls);
     }
 }

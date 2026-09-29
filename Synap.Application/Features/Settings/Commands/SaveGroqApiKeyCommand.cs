@@ -64,7 +64,7 @@ public sealed class SaveGroqApiKeyCommandHandler : ICommandHandler<SaveGroqApiKe
         user.SetGroqApiKey(_secretProtector.Protect(apiKey), apiKey[^4..]);
 
         // A model chosen for the previous key may not exist for the new one.
-        if (user.GroqModel is not null && !validation.Models.Contains(user.GroqModel))
+        if (user.GroqModel is not null && !validation.Models.Any(m => m.Id == user.GroqModel))
         {
             user.SetGroqModel(null);
         }

@@ -13,6 +13,7 @@ public sealed record AssistantAnswer(string Answer, IReadOnlyList<Guid> SourceNo
     public const string KeyMissingMessage = "Necesitas configurar tu API key de Groq en Configuración para usar el asistente.";
     public const string InvalidKeyMessage = "Tu API key de Groq ya no es válida. Actualízala en Configuración.";
     public const string UnavailableMessage = "El asistente no está disponible temporalmente. Inténtalo de nuevo en un momento.";
+    public const string RateLimitedMessage = "Has alcanzado el límite de tu cuota de Groq. Inténtalo de nuevo más tarde.";
     public const string ScopeUnsupportedMessage =
         "Todavía no puedo responder sobre enlaces: solo guardo la dirección, no el contenido del artículo.";
 
@@ -28,6 +29,12 @@ public sealed record AssistantAnswer(string Answer, IReadOnlyList<Guid> SourceNo
 
     /// <summary>Scoped answers only: the note or tag the answer is about.</summary>
     public AssistantScope? Scope { get; init; }
+
+    /// <summary>
+    /// What the assistant did while answering, in order (specs/ai-assistant "Actions shown in the
+    /// answer") - always present, empty when it only answered.
+    /// </summary>
+    public IReadOnlyList<AssistantAction> Actions { get; init; } = [];
 
     public static AssistantAnswer Failed(string message, AssistantAnswerStatus status) => new(message, [], false, status);
 }
@@ -51,4 +58,23 @@ public enum AssistantAnswerStatus
     [JsonStringEnumMemberName("unavailable")] Unavailable,
     /// <summary>The scope can't be answered yet - a bookmark only holds its link (scoped-assistant).</summary>
     [JsonStringEnumMemberName("scopeUnsupported")] ScopeUnsupported,
+}
+
+/// <summary>
+/// One action the assistant performed (assistant-agent-foundations design.md Decision 2):
+/// <see cref="NoteId"/>, <see cref="Title"/> and <see cref="Tags"/> for note actions,
+/// <see cref="Text"/> for a saved memory entry.
+/// </summary>
+public sealed record AssistantAction(
+    AssistantActionType Type,
+    Guid? NoteId = null,
+    string? Title = null,
+    IReadOnlyList<string>? Tags = null,
+    string? Text = null);
+
+public enum AssistantActionType
+{
+    [JsonStringEnumMemberName("noteCreated")] NoteCreated,
+    [JsonStringEnumMemberName("tagsAdded")] TagsAdded,
+    [JsonStringEnumMemberName("memorySaved")] MemorySaved,
 }

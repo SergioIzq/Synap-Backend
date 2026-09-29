@@ -1,6 +1,7 @@
 using SergioIzq.Application.Kernel.Interfaces;
 using SergioIzq.Application.Kernel.Messaging;
 using SergioIzq.Domain.Kernel.Abstractions.Results;
+using Synap.Application.Features.Assistant.Agent;
 using Synap.Domain;
 using Synap.Shared.Application;
 using Synap.Shared.Application.Interfaces;
@@ -12,7 +13,8 @@ public sealed class AskAssistantQueryHandler : IQueryHandler<AskAssistantQuery, 
     public static readonly Error InvalidScope = Error.Validation("Indica una nota o una etiqueta sobre la que preguntar, no ambas.");
     public static readonly Error NoteNotFound = Error.NotFound("Nota no encontrada.");
 
-    // Short memory for scoped conversations (scoped-assistant design.md Decision 1).
+    // Short memory of every conversation (scoped-assistant design.md Decision 1; global ones too
+    // since assistant-agent-foundations).
     public const int MaxHistoryTurns = 3;
     public const int MaxHistoryQuestionChars = 1_000;
     public const int MaxHistoryAnswerChars = 2_000;
@@ -22,15 +24,21 @@ public sealed class AskAssistantQueryHandler : IQueryHandler<AskAssistantQuery, 
     private readonly IUserWriteRepository _userWriteRepository;
     private readonly ISecretProtector _secretProtector;
     private readonly INoteWriteRepository _noteWriteRepository;
+    private readonly IMemoryEntryReadRepository _memoryEntryReadRepository;
+    private readonly AssistantAgent _assistantAgent;
 
     public AskAssistantQueryHandler(
         IAiServiceClient aiServiceClient,
         IUserContext userContext,
         IUserWriteRepository userWriteRepository,
         ISecretProtector secretProtector,
-        INoteWriteRepository noteWriteRepository)
+        INoteWriteRepository noteWriteRepository,
+        IMemoryEntryReadRepository memoryEntryReadRepository,
+        AssistantAgent assistantAgent)
     {
         _noteWriteRepository = noteWriteRepository;
+        _memoryEntryReadRepository = memoryEntryReadRepository;
+        _assistantAgent = assistantAgent;
         _aiServiceClient = aiServiceClient;
         _userContext = userContext;
         _userWriteRepository = userWriteRepository;
@@ -84,14 +92,32 @@ public sealed class AskAssistantQueryHandler : IQueryHandler<AskAssistantQuery, 
             }
         }
 
+        var history = TrimHistory(request.History);
+        // The whole memory goes with every question: it is bounded by construction (specs/assistant-memory).
+        var memory = (await _memoryEntryReadRepository.ListByUserAsync(userId, cancellationToken)).Select(e => e.Text).ToList();
+
         // A tag needs no lookup here: the AI service only searches the user's own tags, so a tag
         // that only exists in someone else's vault ends up as "nothing relevant", like an unused one.
-        // History only makes sense within a scope - global questions stay independent (spec).
-        var history = scope is null ? null : TrimHistory(request.History);
+        // Scoped conversations never perform actions (specs/ai-assistant).
+        if (scope is not null)
+        {
+            return Result.Success(await _aiServiceClient.AskAsync(
+                userId, request.Question, groqApiKey, user.GroqModel, scope.Value, history, memory,
+                ActionsUnavailableReason.Scope, cancellationToken));
+        }
+
+        // The global conversation is the agent (assistant-agent-foundations design.md Decision 6);
+        // when the model can't use tools, the same question is answered without actions.
+        var outcome = await _assistantAgent.RunAsync(userId, request.Question, history, memory, groqApiKey, user.GroqModel, cancellationToken);
+        if (outcome.Answer is not null)
+        {
+            return Result.Success(outcome.Answer);
+        }
 
         var answer = await _aiServiceClient.AskAsync(
-            userId, request.Question, groqApiKey, user.GroqModel, scope?.Value, history, cancellationToken);
-        return Result.Success(answer);
+            userId, request.Question, groqApiKey, user.GroqModel, null, history, memory,
+            ActionsUnavailableReason.Model, cancellationToken);
+        return Result.Success(answer with { Actions = outcome.ActionsSoFar ?? [] });
     }
 
     /// <summary>Null when unscoped; a failure unless exactly one of note or tag is given.</summary>

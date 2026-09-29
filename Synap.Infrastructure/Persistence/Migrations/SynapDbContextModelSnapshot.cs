@@ -22,6 +22,39 @@ namespace Synap.Infrastructure.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Synap.Domain.MemoryEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("FechaCreacion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Text")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("text");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("idx_memory_entries_user_id");
+
+                    b.ToTable("memory_entries", (string)null);
+                });
+
             modelBuilder.Entity("Synap.Domain.Note", b =>
                 {
                     b.Property<Guid>("Id")
@@ -182,6 +215,15 @@ namespace Synap.Infrastructure.Persistence.Migrations
                     b.HasIndex("tag_id");
 
                     b.ToTable("note_tags", (string)null);
+                });
+
+            modelBuilder.Entity("Synap.Domain.MemoryEntry", b =>
+                {
+                    b.HasOne("Synap.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Synap.Domain.Note", b =>

@@ -24,13 +24,13 @@ public sealed class AiServiceClient : IAiServiceClient
         _logger = logger;
     }
 
-    public async Task GenerateEmbeddingAsync(Guid noteId, Guid userId, string content, CancellationToken cancellationToken = default)
+    public async Task GenerateEmbeddingAsync(Guid noteId, Guid userId, string? title, string content, CancellationToken cancellationToken = default)
     {
         try
         {
             using var response = await _httpClient.PostAsJsonAsync(
                 "/internal/embeddings/generate",
-                new GenerateEmbeddingRequest(noteId, userId, content),
+                new GenerateEmbeddingRequest(noteId, userId, title, content),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -66,6 +66,8 @@ public sealed class AiServiceClient : IAiServiceClient
         string? groqModel,
         AssistantScope? scope = null,
         IReadOnlyList<AssistantTurn>? history = null,
+        IReadOnlyList<string>? memory = null,
+        ActionsUnavailableReason? actionsUnavailable = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -79,7 +81,14 @@ public sealed class AiServiceClient : IAiServiceClient
                     groqModel,
                     scope?.NoteId,
                     scope?.Tag,
-                    history?.Select(t => new AskTurnRequest(t.Question, t.Answer)).ToList() ?? []),
+                    history?.Select(t => new AskTurnRequest(t.Question, t.Answer)).ToList() ?? [],
+                    memory?.ToList() ?? [],
+                    actionsUnavailable switch
+                    {
+                        ActionsUnavailableReason.Scope => "scope",
+                        ActionsUnavailableReason.Model => "model",
+                        _ => null,
+                    }),
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -124,12 +133,82 @@ public sealed class AiServiceClient : IAiServiceClient
                 _ => LlmKeyStatus.Unavailable,
             };
 
-            return new LlmModelsResult(status, status == LlmKeyStatus.Ok ? result.Models : []);
+            return new LlmModelsResult(
+                status,
+                status == LlmKeyStatus.Ok ? result.Models.Select(m => new LlmModel(m.Id, m.SupportsActions)).ToList() : []);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
         {
             _logger.LogWarning(ex, "AI service unavailable while listing LLM models");
             return LlmModelsResult.Failed(LlmKeyStatus.Unavailable);
+        }
+    }
+
+    public async Task<AgentStepResult> StepAsync(
+        IReadOnlyList<AgentMessage> messages,
+        IReadOnlyList<AgentTool>? tools,
+        string groqApiKey,
+        string? groqModel,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var request = new StepRequest(
+                messages.Select(m => new StepMessage(
+                    m.Role,
+                    m.Content,
+                    m.ToolCalls?.Select(c => new StepToolCall(c.Id, c.Name, c.Arguments, c.ArgumentsError)).ToList(),
+                    m.ToolCallId)).ToList(),
+                tools?.Select(t => new StepTool(t.Name, t.Description, t.Parameters)).ToList(),
+                groqApiKey,
+                groqModel);
+
+            using var response = await _httpClient.PostAsJsonAsync("/internal/llm/step", request, StepJsonOptions, cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            var result = await response.Content.ReadFromJsonAsync<StepResponse>(cancellationToken)
+                ?? throw new InvalidOperationException("Empty response from AI service.");
+
+            var status = result.Status switch
+            {
+                "ok" => AgentStepStatus.Ok,
+                "invalid_key" => AgentStepStatus.InvalidKey,
+                "rate_limited" => AgentStepStatus.RateLimited,
+                "tools_unsupported" => AgentStepStatus.ToolsUnsupported,
+                "tool_call_failed" => AgentStepStatus.ToolCallFailed,
+                _ => AgentStepStatus.Unavailable,
+            };
+
+            return status != AgentStepStatus.Ok
+                ? AgentStepResult.Failed(status)
+                : new AgentStepResult(
+                    status,
+                    result.Text,
+                    result.ToolCalls?.Select(c => new AgentToolCall(c.Id, c.Name, c.Arguments, c.ArgumentsError)).ToList() ?? []);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+        {
+            // Never the request body: it carries the user's key and their notes.
+            _logger.LogWarning(ex, "AI service unavailable during an assistant step");
+            return AgentStepResult.Failed(AgentStepStatus.Unavailable);
+        }
+    }
+
+    public async Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var response = await _httpClient.PostAsJsonAsync(
+                "/internal/search", new SearchRequest(userId, query, limit), cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            var results = await response.Content.ReadFromJsonAsync<List<SearchResultResponse>>(cancellationToken) ?? [];
+            return results.Select(r => new NoteSearchHit(r.Id, r.Title, r.Type, r.Tags, r.Snippet)).ToList();
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+        {
+            _logger.LogWarning(ex, "AI service unavailable while searching notes for user {UserId}", userId);
+            return [];
         }
     }
 
@@ -148,6 +227,7 @@ public sealed class AiServiceClient : IAiServiceClient
     private sealed record GenerateEmbeddingRequest(
         [property: JsonPropertyName("note_id")] Guid NoteId,
         [property: JsonPropertyName("user_id")] Guid UserId,
+        [property: JsonPropertyName("title")] string? Title,
         [property: JsonPropertyName("content")] string Content);
 
     private sealed record RelatedNoteResponse(
@@ -164,7 +244,9 @@ public sealed class AiServiceClient : IAiServiceClient
         [property: JsonPropertyName("groq_model")] string? GroqModel,
         [property: JsonPropertyName("scope_note_id")] Guid? ScopeNoteId,
         [property: JsonPropertyName("scope_tag")] string? ScopeTag,
-        [property: JsonPropertyName("history")] List<AskTurnRequest> History);
+        [property: JsonPropertyName("history")] List<AskTurnRequest> History,
+        [property: JsonPropertyName("memory")] List<string> Memory,
+        [property: JsonPropertyName("actions_unavailable")] string? ActionsUnavailable);
 
     private sealed record AskTurnRequest(
         [property: JsonPropertyName("question")] string Question,
@@ -192,5 +274,56 @@ public sealed class AiServiceClient : IAiServiceClient
 
     private sealed record ListModelsResponse(
         [property: JsonPropertyName("status")] string Status,
-        [property: JsonPropertyName("models")] List<string> Models);
+        [property: JsonPropertyName("models")] List<ModelResponse> Models);
+
+    private sealed record ModelResponse(
+        [property: JsonPropertyName("id")] string Id,
+        [property: JsonPropertyName("supports_actions")] bool SupportsActions);
+
+    // Null tool fields are left out: the AI service's schema treats a missing field and null alike,
+    // but a tool message with "tool_calls": null is noise in every request.
+    private static readonly JsonSerializerOptions StepJsonOptions = new()
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    private sealed record StepRequest(
+        [property: JsonPropertyName("messages")] List<StepMessage> Messages,
+        [property: JsonPropertyName("tools")] List<StepTool>? Tools,
+        [property: JsonPropertyName("groq_api_key")] string GroqApiKey,
+        [property: JsonPropertyName("groq_model")] string? GroqModel);
+
+    private sealed record StepMessage(
+        [property: JsonPropertyName("role")] string Role,
+        [property: JsonPropertyName("content")] string? Content,
+        [property: JsonPropertyName("tool_calls")] List<StepToolCall>? ToolCalls,
+        [property: JsonPropertyName("tool_call_id")] string? ToolCallId);
+
+    private sealed record StepToolCall(
+        [property: JsonPropertyName("id")] string Id,
+        [property: JsonPropertyName("name")] string Name,
+        [property: JsonPropertyName("arguments")] JsonElement? Arguments,
+        [property: JsonPropertyName("arguments_error")] string? ArgumentsError);
+
+    private sealed record StepTool(
+        [property: JsonPropertyName("name")] string Name,
+        [property: JsonPropertyName("description")] string Description,
+        [property: JsonPropertyName("parameters")] JsonElement Parameters);
+
+    private sealed record StepResponse(
+        [property: JsonPropertyName("status")] string Status,
+        [property: JsonPropertyName("text")] string? Text,
+        [property: JsonPropertyName("tool_calls")] List<StepToolCall>? ToolCalls);
+
+    private sealed record SearchRequest(
+        [property: JsonPropertyName("user_id")] Guid UserId,
+        [property: JsonPropertyName("query")] string Query,
+        [property: JsonPropertyName("limit")] int Limit);
+
+    private sealed record SearchResultResponse(
+        [property: JsonPropertyName("id")] Guid Id,
+        [property: JsonPropertyName("title")] string? Title,
+        [property: JsonPropertyName("type")] string Type,
+        [property: JsonPropertyName("tags")] List<string> Tags,
+        [property: JsonPropertyName("snippet")] string Snippet);
 }

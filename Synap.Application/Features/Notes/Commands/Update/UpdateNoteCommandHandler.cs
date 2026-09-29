@@ -43,7 +43,7 @@ public sealed class UpdateNoteCommandHandler : ICommandHandler<UpdateNoteCommand
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
         // specs/ai-assistant "Embedding refreshed on edit".
-        EmbeddingSupport.EnqueueGeneration(_backgroundJobQueue, note.Id.Value, userId, request.Content);
+        EmbeddingSupport.EnqueueGeneration(_backgroundJobQueue, note.Id.Value, userId, note.Title, note.Content);
 
         return Result.Success();
     }

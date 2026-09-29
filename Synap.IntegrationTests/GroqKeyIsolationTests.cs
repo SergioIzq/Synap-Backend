@@ -2,12 +2,14 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using SergioIzq.Application.Kernel.Interfaces;
 using SergioIzq.Domain.Kernel.Interfaces;
+using Synap.Application.Features.Assistant.Agent;
 using Synap.Application.Features.Assistant.Queries;
 using Synap.Application.Features.Settings;
 using Synap.Application.Features.Settings.Commands;
 using Synap.Application.Features.Settings.Queries;
 using Synap.Domain;
 using Synap.Infrastructure.Persistence.Command;
+using Synap.Infrastructure.Persistence.Data.Memory;
 using Synap.Infrastructure.Persistence.Data.Notes;
 using Synap.Infrastructure.Persistence.Data.Users;
 using Synap.Infrastructure.Services.Secrets;
@@ -60,12 +62,12 @@ public class GroqKeyIsolationTests
             Assert.False(settingsB.Value.Ai.HasGroqKey);
             Assert.Null(settingsB.Value.Ai.GroqKeyMasked);
 
-            var answerB = await new AskAssistantQueryHandler(ai, new StaticUserContext(userB), new UserWriteRepository(context), _protector, new NoteWriteRepository(context))
+            var answerB = await AskHandler(ai, userB, context)
                 .Handle(new AskAssistantQuery("¿cuál es la key de A?"), default);
             Assert.Equal(AssistantAnswerStatus.KeyMissing, answerB.Value.Status);
             Assert.Empty(ai.AskCalls);
 
-            var answerA = await new AskAssistantQueryHandler(ai, new StaticUserContext(userA), new UserWriteRepository(context), _protector, new NoteWriteRepository(context))
+            var answerA = await AskHandler(ai, userA, context)
                 .Handle(new AskAssistantQuery("pregunta"), default);
             Assert.Equal(AssistantAnswerStatus.Ok, answerA.Value.Status);
             Assert.Equal([(userA, UserAKey)], ai.AskCalls);
@@ -98,8 +100,7 @@ public class GroqKeyIsolationTests
 
         await using (var context = _fixture.CreateContext())
         {
-            var askAsB = new AskAssistantQueryHandler(
-                ai, new StaticUserContext(userB), new UserWriteRepository(context), _protector, new NoteWriteRepository(context));
+            var askAsB = AskHandler(ai, userB, context);
 
             var aboutAsNote = await askAsB.Handle(new AskAssistantQuery("¿qué dice?", new AssistantScope(userAsNote, null)), default);
             Assert.True(aboutAsNote.IsFailure);
@@ -111,6 +112,30 @@ public class GroqKeyIsolationTests
             Assert.Equal([(userB, "gsk_user_b_key_BB11")], ai.AskCalls);
             Assert.Equal(new AssistantScope(null, "solo-de-a"), Assert.Single(ai.Scopes));
         }
+    }
+
+    /// <summary>
+    /// The handler over the real repositories. Its agent never gets to run a tool here - the
+    /// fake AI service reports that the model can't use them - so its sender is never called;
+    /// the agent's tools are covered through the HTTP pipeline (AssistantAgentApiTests).
+    /// </summary>
+    private AskAssistantQueryHandler AskHandler(RecordingAiServiceClient ai, Guid userId, SynapDbContext context)
+        => new(
+            ai,
+            new StaticUserContext(userId),
+            new UserWriteRepository(context),
+            _protector,
+            new NoteWriteRepository(context),
+            new MemoryEntryReadRepository(context),
+            new AssistantAgent(ai, new UnusedSender(), new NoteReadRepository(new TestDbConnectionFactory(_fixture.ConnectionString))));
+
+    private sealed class UnusedSender : MediatR.ISender
+    {
+        public Task<TResponse> Send<TResponse>(MediatR.IRequest<TResponse> request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default) where TRequest : MediatR.IRequest => throw new NotSupportedException();
+        public Task<object?> Send(object request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public IAsyncEnumerable<TResponse> CreateStream<TResponse>(MediatR.IStreamRequest<TResponse> request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public IAsyncEnumerable<object?> CreateStream(object request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private async Task<(Guid UserA, Guid UserB)> CreateUsersAsync()
@@ -139,12 +164,16 @@ public class GroqKeyIsolationTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class RecordingAiServiceClient : IAiServiceClient
+    internal sealed class RecordingAiServiceClient : IAiServiceClient
     {
         public List<(Guid UserId, string Key)> AskCalls { get; } = [];
         public List<AssistantScope?> Scopes { get; } = [];
+        public List<IReadOnlyList<string>?> Memories { get; } = [];
+        public Queue<AgentStepResult> Steps { get; } = new();
+        public List<IReadOnlyList<AgentMessage>> StepMessages { get; } = [];
+        public List<Guid> SearchUserIds { get; } = [];
 
-        public Task GenerateEmbeddingAsync(Guid noteId, Guid userId, string content, CancellationToken cancellationToken = default)
+        public Task GenerateEmbeddingAsync(Guid noteId, Guid userId, string? title, string content, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 
         public Task<IReadOnlyList<RelatedNote>> GetRelatedNotesAsync(Guid noteId, Guid userId, CancellationToken cancellationToken = default)
@@ -157,14 +186,31 @@ public class GroqKeyIsolationTests
             string? groqModel,
             AssistantScope? scope = null,
             IReadOnlyList<AssistantTurn>? history = null,
+            IReadOnlyList<string>? memory = null,
+            ActionsUnavailableReason? actionsUnavailable = null,
             CancellationToken cancellationToken = default)
         {
             AskCalls.Add((userId, groqApiKey));
             Scopes.Add(scope);
+            Memories.Add(memory);
             return Task.FromResult(new AssistantAnswer("ok", [], true, AssistantAnswerStatus.Ok));
         }
 
         public Task<LlmModelsResult> ListModelsAsync(string groqApiKey, CancellationToken cancellationToken = default)
-            => Task.FromResult(new LlmModelsResult(LlmKeyStatus.Ok, ["model-a"]));
+            => Task.FromResult(new LlmModelsResult(LlmKeyStatus.Ok, [new LlmModel("model-a", true)]));
+
+        /// <summary>Scripted steps in order; once exhausted, the model reports that it can't use tools (RAG fallback).</summary>
+        public Task<AgentStepResult> StepAsync(
+            IReadOnlyList<AgentMessage> messages, IReadOnlyList<AgentTool>? tools, string groqApiKey, string? groqModel, CancellationToken cancellationToken = default)
+        {
+            StepMessages.Add(messages.ToList());
+            return Task.FromResult(Steps.Count > 0 ? Steps.Dequeue() : AgentStepResult.Failed(AgentStepStatus.ToolsUnsupported));
+        }
+
+        public Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, CancellationToken cancellationToken = default)
+        {
+            SearchUserIds.Add(userId);
+            return Task.FromResult<IReadOnlyList<NoteSearchHit>>([]);
+        }
     }
 }

@@ -1,6 +1,7 @@
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using SergioIzq.Application.Kernel.DependencyInjection;
+using Synap.Application.Features.Assistant.Agent;
 
 namespace Synap.Application;
 
@@ -12,6 +13,8 @@ public static class DependencyInjection
 
         services.AddMarkedServices(typeof(DependencyInjection).Assembly);
         services.AddKernelDependencyOrchestration();
+
+        services.AddScoped<AssistantAgent>();
 
         return services;
     }

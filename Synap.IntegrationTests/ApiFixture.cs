@@ -42,6 +42,9 @@ public sealed class ApiFixture : IAsyncLifetime
     /// <summary>Every email the API "sends" during the test run - nothing leaves the process.</summary>
     public CapturingEmailSender Emails { get; } = new();
 
+    /// <summary>Stands in for the Python AI service; unreachable-like unless a test scripts it.</summary>
+    public ApiAiServiceFake Ai { get; } = new();
+
     public async Task InitializeAsync()
     {
         await _container.StartAsync();
@@ -57,6 +60,8 @@ public sealed class ApiFixture : IAsyncLifetime
             {
                 services.RemoveAll<IEmailSender>();
                 services.AddSingleton<IEmailSender>(Emails);
+                services.RemoveAll<IAiServiceClient>();
+                services.AddSingleton<IAiServiceClient>(Ai);
             });
         });
 

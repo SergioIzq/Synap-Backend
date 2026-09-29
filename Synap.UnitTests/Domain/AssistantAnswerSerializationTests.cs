@@ -24,6 +24,25 @@ public class AssistantAnswerSerializationTests
 
         Assert.Equal($"\"{expected}\"", JsonSerializer.Serialize(status, options));
     }
+
+    [Theory]
+    [InlineData(AssistantActionType.NoteCreated, "noteCreated")]
+    [InlineData(AssistantActionType.TagsAdded, "tagsAdded")]
+    [InlineData(AssistantActionType.MemorySaved, "memorySaved")]
+    public void Action_type_is_serialized_with_its_camelCase_wire_name(AssistantActionType type, string expected)
+    {
+        var options = new JsonSerializerOptions { Converters = { new JsonStringEnumConverter() } };
+
+        Assert.Equal($"\"{expected}\"", JsonSerializer.Serialize(type, options));
+    }
+
+    [Fact]
+    public void Actions_are_always_present_even_when_empty()
+    {
+        var json = JsonSerializer.Serialize(new AssistantAnswer("a", [], false, AssistantAnswerStatus.Ok), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("\"actions\":[]", json);
+    }
 }
 
 /// <summary>branding-and-note-composer task 1.1 - the web app switches on these exact strings.</summary>

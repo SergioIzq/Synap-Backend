@@ -55,7 +55,7 @@ public sealed class SetGroqModelCommandHandler : ICommandHandler<SetGroqModelCom
                 return Result.Failure<AiSettingsResponse>(available.Error);
             }
 
-            if (!available.Value.Contains(model))
+            if (!available.Value.Any(m => m.Id == model))
             {
                 return Result.Failure<AiSettingsResponse>(SettingsErrors.GroqModelUnknown);
             }

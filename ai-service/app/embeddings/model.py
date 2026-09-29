@@ -19,3 +19,16 @@ def embed_text(text: str) -> list[float]:
     # embed() is a generator - list()[0] gets the single vector for our one input string.
     embedding = list(model.embed([text]))[0]
     return embedding.tolist()
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """One call for a batch - used by the background reindex."""
+    model = get_embedding_model()
+    return [embedding.tolist() for embedding in model.embed(texts)]
+
+
+def note_text(title: str | None, content: str) -> str:
+    """What a note's embedding is computed from: its title too, so a note is found by what it is
+    called and not only by what it says (assistant-agent-foundations design.md Decision 5)."""
+    title = (title or "").strip()
+    return f"{title}\n\n{content}" if title else content

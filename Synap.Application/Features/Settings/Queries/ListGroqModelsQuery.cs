@@ -7,10 +7,13 @@ using Synap.Shared.Application.Interfaces;
 
 namespace Synap.Application.Features.Settings.Queries;
 
-/// <summary>Chat models available to the user's stored key (specs/user-settings "Choose the assistant model").</summary>
-public sealed record ListGroqModelsQuery : IQuery<IReadOnlyList<string>>;
+/// <summary>
+/// Chat models available to the user's stored key, each marked as supporting assistant actions
+/// or not (specs/user-settings "Choose the assistant model").
+/// </summary>
+public sealed record ListGroqModelsQuery : IQuery<IReadOnlyList<LlmModel>>;
 
-public sealed class ListGroqModelsQueryHandler : IQueryHandler<ListGroqModelsQuery, IReadOnlyList<string>>
+public sealed class ListGroqModelsQueryHandler : IQueryHandler<ListGroqModelsQuery, IReadOnlyList<LlmModel>>
 {
     private readonly IUserWriteRepository _userWriteRepository;
     private readonly IUserContext _userContext;
@@ -29,12 +32,12 @@ public sealed class ListGroqModelsQueryHandler : IQueryHandler<ListGroqModelsQue
         _aiServiceClient = aiServiceClient;
     }
 
-    public async Task<Result<IReadOnlyList<string>>> Handle(ListGroqModelsQuery request, CancellationToken cancellationToken)
+    public async Task<Result<IReadOnlyList<LlmModel>>> Handle(ListGroqModelsQuery request, CancellationToken cancellationToken)
     {
         var user = await _userWriteRepository.GetByIdAsync(_userContext.RequireUserId(), cancellationToken);
         if (user is null)
         {
-            return Result.Failure<IReadOnlyList<string>>(SettingsErrors.UserNotFound);
+            return Result.Failure<IReadOnlyList<LlmModel>>(SettingsErrors.UserNotFound);
         }
 
         return await GroqModelLookup.ListForUserAsync(user, _secretProtector, _aiServiceClient, cancellationToken);

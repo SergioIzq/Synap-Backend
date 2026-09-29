@@ -7,9 +7,11 @@ from app.core.config import settings
 from app.core.security import verify_internal_api_key
 from app.embeddings import repository
 from app.embeddings.model import embed_text
+from app.embeddings.search import hybrid_search
 from app.llm.context import NotesContext, build_note_context, build_notes_context, fits
 from app.llm.factory import get_llm_provider
 from app.llm.provider import (
+    ActionsUnavailable,
     AnswerScope,
     HistoryTurn,
     LlmInvalidCredentialsError,
@@ -20,10 +22,7 @@ from app.llm.provider import (
 
 router = APIRouter(prefix="/internal/assistant", dependencies=[Depends(verify_internal_api_key)])
 
-# Cosine similarity cutoff below which a match is treated as "not actually relevant" rather
-# than grounding an answer - tunable; deferrable per design.md (doesn't change the spec).
-MIN_RELEVANT_SIMILARITY = 0.2
-
+NO_NOTES_CONTEXT = "(No relevant notes were found. If the user asked about their notes, say you found nothing relevant.)"
 NOTHING_RELEVANT_MESSAGE = "No he encontrado nada relevante sobre eso en tus notas."
 INVALID_KEY_MESSAGE = "Tu API key de Groq ya no es válida. Actualízala en Configuración."
 RATE_LIMITED_MESSAGE = "Has alcanzado el límite de tu cuota de Groq. Inténtalo de nuevo más tarde."
@@ -37,6 +36,11 @@ SCOPE_UNSUPPORTED_MESSAGE = (
 MAX_HISTORY_TURNS = 3
 MAX_HISTORY_QUESTION_CHARS = 1_000
 MAX_HISTORY_ANSWER_CHARS = 2_000
+
+# The user's memory (specs/assistant-memory) - also enforced by the .NET API; re-applied here so
+# this service never trusts its caller for the prompt size.
+MAX_MEMORY_ENTRIES = 25
+MAX_MEMORY_ENTRY_CHARS = 200
 
 # Sources without a title are shown by a preview of their content instead.
 SOURCE_PREVIEW_CHARS = 60
@@ -60,6 +64,9 @@ class AskRequest(BaseModel):
     scope_note_id: str | None = None
     scope_tag: str | None = None
     history: list[HistoryItem] = Field(default_factory=list)
+    memory: list[str] = Field(default_factory=list)
+    # Set by the .NET API when this question is answered without actions - see ActionsUnavailable.
+    actions_unavailable: ActionsUnavailable | None = None
 
     @model_validator(mode="after")
     def _one_scope(self) -> "AskRequest":
@@ -78,6 +85,13 @@ class AskRequest(BaseModel):
             )
             for item in history[-MAX_HISTORY_TURNS:]
         ]
+
+
+    @field_validator("memory")
+    @classmethod
+    def _cap_memory(cls, memory: list[str]) -> list[str]:
+        entries = (entry.strip()[:MAX_MEMORY_ENTRY_CHARS] for entry in memory[:MAX_MEMORY_ENTRIES])
+        return [entry for entry in entries if entry]
 
 
 class AnswerSource(BaseModel):
@@ -119,16 +133,27 @@ async def ask(request: AskRequest, provider: LlmProvider = Depends(get_llm_provi
     if request.scope_tag:
         return await _ask_about_tag(request, provider)
 
-    question_embedding = embed_text(request.question)
-    matches = await repository.search_similar(request.user_id, question_embedding)
-
-    relevant = [m for m in matches if m["similarity"] >= MIN_RELEVANT_SIMILARITY]
+    # Hybrid search with its keep rule decides relevance (assistant-agent-foundations design.md
+    # Decision 5); nothing kept means an honest "nothing found" without contacting the provider.
+    query = _search_query(request)
+    relevant = await hybrid_search(request.user_id, query, embed_text(query))
 
     if not relevant:
-        return _failed(NOTHING_RELEVANT_MESSAGE, "no_relevant_notes")
+        # Without actions the question may be a request ("apúntame…") rather than a question
+        # about the notes: the model has to be able to say it can't do it, so it still answers.
+        if request.actions_unavailable != "model":
+            return _failed(NOTHING_RELEVANT_MESSAGE, "no_relevant_notes")
+        return await _generate(request, provider, NO_NOTES_CONTEXT, [])
 
     context = "\n\n---\n\n".join(f"[{m['title'] or 'Untitled'}]\n{m['content']}" for m in relevant)
     return await _generate(request, provider, context, relevant)
+
+
+def _search_query(request: AskRequest) -> str:
+    """A follow-up like "¿y el segundo?" says little on its own - search with the previous
+    question too, without spending an extra LLM call on rewriting it."""
+    previous = request.history[-1].question if request.history else ""
+    return f"{previous}\n{request.question}".strip()
 
 
 async def _ask_about_note(request: AskRequest, provider: LlmProvider) -> AskResponse:
@@ -155,10 +180,7 @@ async def _ask_about_tag(request: AskRequest, provider: LlmProvider) -> AskRespo
 
     budget = settings.context_budget_chars
     if not fits(tagged, budget):
-        # A follow-up like "¿y el segundo?" says little on its own - search with the previous
-        # question too, without spending an extra LLM call on rewriting it.
-        previous = request.history[-1].question if request.history else ""
-        embedding = embed_text(f"{previous}\n{request.question}".strip())
+        embedding = embed_text(_search_query(request))
         order = await repository.rank_notes_by_similarity(request.user_id, [n["id"] for n in tagged], embedding)
         by_id = {n["id"]: n for n in tagged}
         tagged = [by_id[i] for i in order if i in by_id]
@@ -177,9 +199,16 @@ async def _generate(
     notes: NotesContext | None = None,
 ) -> AskResponse:
     model = request.groq_model or settings.groq_model
+    # Every conversation, global or scoped, has its short history; memory goes with every question.
     extra = {}
+    if request.history:
+        extra["history"] = [HistoryTurn(h.question, h.answer) for h in request.history]
+    if request.memory:
+        extra["memory"] = request.memory
+    if request.actions_unavailable:
+        extra["actions_unavailable"] = request.actions_unavailable
     if scope is not None:
-        extra = {"history": [HistoryTurn(h.question, h.answer) for h in request.history], "scope": scope}
+        extra["scope"] = scope
 
     try:
         answer = await provider.generate_answer(request.question, context, request.groq_api_key, model, **extra)
@@ -194,7 +223,7 @@ async def _generate(
         answer=answer,
         source_note_ids=[str(m["id"]) for m in sources],
         sources=[AnswerSource(id=str(m["id"]), title=_source_title(m)) for m in sources],
-        grounded=True,
+        grounded=bool(sources),
         status="ok",
     )
     if scope is not None:

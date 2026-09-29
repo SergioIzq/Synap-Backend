@@ -11,6 +11,12 @@ namespace Synap.UnitTests.Services.Telegram;
 /// <summary>assistant-reminders task 5.2.</summary>
 public class TelegramSenderTests
 {
+    /// <summary>
+    /// Shaped like a real token - "&lt;id&gt;:&lt;secret&gt;" - on purpose. A token without the colon
+    /// hides the bug where the relative path parses as a URI scheme instead of a path.
+    /// </summary>
+    private const string Token = "8995458592:AAH-token-de-prueba";
+
     private static readonly TelegramMessage Message = new("123456789", "Renovar el certificado SSL",
     [
         new TelegramButton("✓ Hecho", "done:1"),
@@ -26,12 +32,12 @@ public class TelegramSenderTests
     }
 
     private static TelegramSettings On(bool inlineButtons = true)
-        => new() { Enabled = true, BotToken = "bot-token", InlineButtons = inlineButtons };
+        => new() { Enabled = true, BotToken = Token, InlineButtons = inlineButtons };
 
     [Fact]
     public async Task A_disabled_sender_makes_no_request_at_all()
     {
-        var (sender, handler) = Build(new TelegramSettings { Enabled = false, BotToken = "bot-token" });
+        var (sender, handler) = Build(new TelegramSettings { Enabled = false, BotToken = Token });
 
         Assert.False(sender.IsEnabled);
         Assert.False(await sender.SendAsync(Message));
@@ -59,7 +65,7 @@ public class TelegramSenderTests
         Assert.True(await sender.SendAsync(Message));
 
         var request = Assert.Single(handler.Requests);
-        Assert.Equal("/botbot-token/sendMessage", request.Path);
+        Assert.Equal($"/bot{Token}/sendMessage", request.Path);
         var payload = JsonDocument.Parse(request.Body).RootElement;
         Assert.Equal("123456789", payload.GetProperty("chat_id").GetString());
         Assert.Equal("Renovar el certificado SSL", payload.GetProperty("text").GetString());
@@ -100,7 +106,7 @@ public class TelegramSenderTests
         Assert.True(await sender.EditAsync("123456789", 42, "✓ Hecho"));
 
         var request = Assert.Single(handler.Requests);
-        Assert.Equal("/botbot-token/editMessageText", request.Path);
+        Assert.Equal($"/bot{Token}/editMessageText", request.Path);
         var payload = JsonDocument.Parse(request.Body).RootElement;
         Assert.Equal(42, payload.GetProperty("message_id").GetInt64());
         Assert.Equal("✓ Hecho", payload.GetProperty("text").GetString());
@@ -141,7 +147,7 @@ public class TelegramSenderTests
         await sender.AnswerCallbackAsync("callback-id", "Hecho ✓");
 
         var request = Assert.Single(handler.Requests);
-        Assert.Equal("/botbot-token/answerCallbackQuery", request.Path);
+        Assert.Equal($"/bot{Token}/answerCallbackQuery", request.Path);
         var payload = JsonDocument.Parse(request.Body).RootElement;
         Assert.Equal("callback-id", payload.GetProperty("callback_query_id").GetString());
         Assert.Equal("Hecho ✓", payload.GetProperty("text").GetString());

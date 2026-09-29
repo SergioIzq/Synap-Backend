@@ -112,7 +112,10 @@ public sealed class TelegramSender : ITelegramSender
     {
         try
         {
-            using var response = await _httpClient.PostAsJsonAsync($"bot{_settings.BotToken}/{method}", payload, cancellationToken);
+            // The leading "/" is load-bearing: a bot token is "<id>:<secret>", so a relative path
+            // starting with "bot123:..." parses as a URI whose scheme is "bot123", and the request
+            // fails with NotSupportedException before it ever leaves the process.
+            using var response = await _httpClient.PostAsJsonAsync($"/bot{_settings.BotToken}/{method}", payload, cancellationToken);
             if (response.IsSuccessStatusCode)
             {
                 return true;

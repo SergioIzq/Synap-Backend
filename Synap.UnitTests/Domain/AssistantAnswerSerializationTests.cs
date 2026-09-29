@@ -29,6 +29,7 @@ public class AssistantAnswerSerializationTests
     [InlineData(AssistantActionType.NoteCreated, "noteCreated")]
     [InlineData(AssistantActionType.TagsAdded, "tagsAdded")]
     [InlineData(AssistantActionType.MemorySaved, "memorySaved")]
+    [InlineData(AssistantActionType.ReminderCreated, "reminderCreated")]
     public void Action_type_is_serialized_with_its_camelCase_wire_name(AssistantActionType type, string expected)
     {
         var options = new JsonSerializerOptions { Converters = { new JsonStringEnumConverter() } };

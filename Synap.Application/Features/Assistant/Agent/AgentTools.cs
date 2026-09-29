@@ -15,6 +15,7 @@ internal static class AgentTools
     public const string CreateNote = "create_note";
     public const string AddTags = "add_tags";
     public const string Remember = "remember";
+    public const string SetReminder = "set_reminder";
 
     public const int MaxSearchLimit = 8;
 
@@ -58,6 +59,17 @@ internal static class AgentTools
             """
             {"type": "object", "additionalProperties": false, "required": ["text"], "properties": {
               "text": {"type": "string", "maxLength": 200, "description": "The fact, short, in the user's words."}
+            }}
+            """),
+        Tool(SetReminder,
+            "Warn the user about something at a given moment, through Telegram. Only when they ask to be reminded "
+            + "or warned about something - never on your own initiative.",
+            """
+            {"type": "object", "additionalProperties": false, "required": ["text", "due_at"], "properties": {
+              "text": {"type": "string", "maxLength": 500, "description": "What to remind them of, short, in their own words."},
+              "due_at": {"type": "string", "description": "When, as ISO 8601 in UTC (e.g. 2026-10-03T07:00:00Z). Resolve relative wording against the current moment and timezone given to you."},
+              "note_id": {"type": "string", "description": "A note of theirs the reminder is about, by the id a search returned. Only when the reminder really is about that note."},
+              "recurrence": {"type": "string", "description": "For a repeating reminder: \"daily\", \"weekly:<0-6>\" (0 = Monday) or \"monthly:<1-28>\". Leave out for a one-off."}
             }}
             """),
     ];

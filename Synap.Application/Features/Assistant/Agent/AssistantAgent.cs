@@ -1,10 +1,13 @@
 using MediatR;
 using Synap.Application.Features.Memory.Commands;
+using Synap.Application.Features.Reminders;
+using Synap.Application.Features.Reminders.Commands;
 using Synap.Application.Features.Notes;
 using Synap.Application.Features.Notes.Commands.AddTag;
 using Synap.Application.Features.Notes.Commands.Create;
 using Synap.Domain;
 using Synap.Shared.Application.Interfaces;
+using System.Globalization;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -52,10 +55,13 @@ public sealed class AssistantAgent
         IReadOnlyList<string> memory,
         string groqApiKey,
         string? groqModel,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? timezone = null)
     {
-        var run = new Run(userId);
-        var messages = AgentPrompt.Messages(question, history, memory);
+        var run = new Run(userId, timezone);
+        // The model needs the current moment and the user's timezone to turn "el viernes" into the
+        // UTC instant set_reminder takes (assistant-reminders design.md Decision 6).
+        var messages = AgentPrompt.Messages(question, history, memory, DateTime.UtcNow, timezone);
         var retriedToolCall = false;
 
         for (var step = 1; step <= MaxSteps; step++)
@@ -121,6 +127,7 @@ public sealed class AssistantAgent
             AgentTools.CreateNote => await CreateAsync(run, args, cancellationToken),
             AgentTools.AddTags => await AddTagsAsync(run, args, cancellationToken),
             AgentTools.Remember => await RememberAsync(run, args, cancellationToken),
+            AgentTools.SetReminder => await SetReminderAsync(run, args, cancellationToken),
             _ => Error("unknown_tool"),
         };
     }
@@ -259,6 +266,45 @@ public sealed class AssistantAgent
         return new JsonObject { ["id"] = saved.Value.Id.ToString(), ["text"] = saved.Value.Text };
     }
 
+    private async Task<JsonObject> SetReminderAsync(Run run, JsonElement args, CancellationToken cancellationToken)
+    {
+        // The model is told to send ISO 8601 UTC; anything else is its mistake to correct, not a
+        // moment to guess at.
+        if (!DateTime.TryParse(
+                GetString(args, "due_at"),
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                out var dueAt))
+        {
+            return Error("El momento del recordatorio tiene que ser una fecha ISO 8601 en UTC.");
+        }
+
+        Guid? noteId = Guid.TryParse(GetString(args, "note_id"), out var parsedNoteId) ? parsedNoteId : null;
+        var created = await _sender.Send(
+            new CreateReminderCommand(GetString(args, "text"), dueAt, noteId, GetString(args, "recurrence")), cancellationToken);
+        if (created.IsFailure)
+        {
+            // The model relays it: "tiene que estar en el futuro", "nota no encontrada"...
+            return Error(created.Error.Message);
+        }
+
+        run.Actions.Add(new AssistantAction(AssistantActionType.ReminderCreated, created.Value.NoteId, Text: created.Value.Text)
+        {
+            DueAt = created.Value.DueAt,
+            Recurrence = created.Value.Recurrence,
+        });
+
+        return new JsonObject
+        {
+            ["id"] = created.Value.Id.ToString(),
+            ["text"] = created.Value.Text,
+            // Echoed back in the user's own words so the model states the same moment it set.
+            ["due_at"] = created.Value.DueAt.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+            ["due_at_local"] = ReminderMessage.Moment(created.Value.DueAt, run.Timezone),
+            ["recurrence"] = created.Value.Recurrence,
+        };
+    }
+
     // ---- Helpers ----
 
     private static JsonObject Error(string error) => new() { ["error"] = error };
@@ -287,11 +333,12 @@ public sealed class AssistantAgent
     }
 
     /// <summary>What one question has gathered so far.</summary>
-    private sealed class Run(Guid userId)
+    private sealed class Run(Guid userId, string? timezone)
     {
         private readonly List<AssistantSource> _sources = [];
 
         public Guid UserId { get; } = userId;
+        public string? Timezone { get; } = timezone;
         public List<AssistantAction> Actions { get; } = [];
         public Dictionary<(string Title, string Content), Guid> CreatedNotes { get; } = [];
 

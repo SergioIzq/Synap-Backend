@@ -39,9 +39,9 @@ public class AssistantAgentApiTests
         return (await response.ReadJsonAsync()).GetProperty("value").GetGuid();
     }
 
-    private static async Task<JsonElement> AskAsync(HttpClient client, string question, object[]? history = null)
+    private static async Task<JsonElement> AskAsync(HttpClient client, string question, object[]? history = null, string? timezone = null)
     {
-        var response = await client.PostAsJsonAsync("/api/assistant/ask", new { question, history });
+        var response = await client.PostAsJsonAsync("/api/assistant/ask", new { question, history, timezone });
         response.EnsureSuccessStatusCode();
         return (await response.ReadJsonAsync()).GetProperty("value");
     }
@@ -74,6 +74,101 @@ public class AssistantAgentApiTests
         Assert.Equal(["infra"], await TagsOfAsync(client, noteId));
         var memory = (await (await client.GetAsync("/api/memory")).ReadJsonAsync()).GetProperty("value").GetProperty("entries");
         Assert.Equal("prefiero respuestas cortas", Assert.Single(memory.EnumerateArray()).GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task Sets_a_reminder_as_the_user_and_reports_it_with_its_moment()
+    {
+        var (client, key, _) = await UserWithKeyAsync();
+        var moment = DateTime.UtcNow.AddDays(3).AddMinutes(-DateTime.UtcNow.Second);
+        _api.Ai.ScriptSteps(key,
+            Calls(("set_reminder", new { text = "Renovar el certificado SSL", due_at = moment.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'") })),
+            Text("Te lo recuerdo el viernes a las 9:00."));
+
+        var answer = await AskAsync(client, "recuérdame el viernes que tengo que renovar el certificado SSL", timezone: "Europe/Madrid");
+
+        var action = Assert.Single(answer.GetProperty("actions").EnumerateArray());
+        Assert.Equal("reminderCreated", action.GetProperty("type").GetString());
+        Assert.Equal("Renovar el certificado SSL", action.GetProperty("text").GetString());
+        Assert.Equal(moment.ToString("yyyy-MM-ddTHH:mm:ss"), action.GetProperty("dueAt").GetDateTime().ToString("yyyy-MM-ddTHH:mm:ss"));
+
+        // And it is a real reminder, listed like any other.
+        var listed = (await (await client.GetAsync("/api/reminders")).ReadJsonAsync())
+            .GetProperty("value").GetProperty("reminders").EnumerateArray().Single();
+        Assert.Equal("Renovar el certificado SSL", listed.GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task A_recurring_reminder_set_by_the_assistant_reports_its_recurrence()
+    {
+        var (client, key, _) = await UserWithKeyAsync();
+        _api.Ai.ScriptSteps(key,
+            Calls(("set_reminder", new
+            {
+                text = "Revisar las copias de seguridad",
+                due_at = DateTime.UtcNow.AddDays(1).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+                recurrence = "weekly:0",
+            })),
+            Text("Todos los lunes."));
+
+        var answer = await AskAsync(client, "avísame todos los lunes de revisar las copias", timezone: "Europe/Madrid");
+
+        var action = Assert.Single(answer.GetProperty("actions").EnumerateArray());
+        Assert.Equal("weekly:0", action.GetProperty("recurrence").GetString());
+    }
+
+    [Fact]
+    public async Task A_reminder_in_the_past_is_refused_and_nothing_is_created()
+    {
+        var (client, key, _) = await UserWithKeyAsync();
+        _api.Ai.ScriptSteps(key,
+            Calls(("set_reminder", new { text = "Tarde", due_at = DateTime.UtcNow.AddDays(-1).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'") })),
+            Text("Ese momento ya ha pasado."));
+
+        var answer = await AskAsync(client, "recuérdame ayer", timezone: "Europe/Madrid");
+
+        Assert.Empty(answer.GetProperty("actions").EnumerateArray());
+        var reminders = (await (await client.GetAsync("/api/reminders")).ReadJsonAsync())
+            .GetProperty("value").GetProperty("reminders");
+        Assert.Empty(reminders.EnumerateArray());
+    }
+
+    [Fact]
+    public async Task The_question_stores_the_browsers_timezone_for_later_telegram_actions()
+    {
+        var (client, key, userId) = await UserWithKeyAsync();
+        _api.Ai.ScriptSteps(key, Text("hola"));
+
+        await AskAsync(client, "hola", timezone: "America/New_York");
+
+        await using var connection = await _api.OpenConnectionAsync();
+        var stored = await connection.ExecuteScalarAsync<string?>(
+            "SELECT timezone FROM users WHERE id = @userId", new { userId });
+        Assert.Equal("America/New_York", stored);
+    }
+
+    [Fact]
+    public async Task The_prompt_tells_the_model_the_current_moment_and_the_users_timezone()
+    {
+        var (client, key, _) = await UserWithKeyAsync();
+        _api.Ai.ScriptSteps(key, Text("hola"));
+
+        await AskAsync(client, "hola", timezone: "Europe/Madrid");
+
+        var system = _api.Ai.StepRequests.Last(r => r.Key == key).Messages[0].Content!;
+        Assert.Contains("Europe/Madrid", system);
+        Assert.Contains(DateTime.UtcNow.ToString("yyyy-MM-dd"), system);
+    }
+
+    [Fact]
+    public async Task A_question_without_a_timezone_still_works()
+    {
+        var (client, key, _) = await UserWithKeyAsync();
+        _api.Ai.ScriptSteps(key, Text("hola"));
+
+        var answer = await AskAsync(client, "hola");
+
+        Assert.Equal("ok", answer.GetProperty("status").GetString());
     }
 
     [Fact]

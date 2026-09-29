@@ -49,6 +49,17 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
 
         builder.Property(u => u.SecurityStamp).HasColumnName("security_stamp").HasMaxLength(32).IsRequired();
 
+        // Reminder delivery over Telegram (assistant-reminders design.md Decision 7).
+        builder.Property(u => u.TelegramChatId).HasColumnName("telegram_chat_id").HasMaxLength(20);
+        builder.Property(u => u.TelegramLinkToken).HasColumnName("telegram_link_token").HasMaxLength(64);
+        builder.Property(u => u.TelegramLinkTokenExpiresAt).HasColumnName("telegram_link_token_expires");
+        builder.Property(u => u.Timezone).HasColumnName("timezone").HasMaxLength(64);
+        builder.Ignore(u => u.HasTelegram);
+
+        // The webhook looks users up by the code they sent to the bot, and delivery by chat id.
+        builder.HasIndex(u => u.TelegramLinkToken);
+        builder.HasIndex(u => u.TelegramChatId);
+
         builder.Property(u => u.FechaCreacion)
             .HasColumnName("created_at")
             .IsRequired()

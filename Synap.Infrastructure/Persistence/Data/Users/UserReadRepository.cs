@@ -35,4 +35,20 @@ public sealed class UserReadRepository : IUserReadRepository
 
     public Task<User?> GetByApiTokenHashAsync(string apiTokenHash, CancellationToken cancellationToken = default)
         => _context.Set<User>().AsNoTracking().FirstOrDefaultAsync(u => u.ApiTokenHash == apiTokenHash, cancellationToken);
+
+    public Task<User?> GetByTelegramLinkTokenAsync(string token, CancellationToken cancellationToken = default)
+        => _context.Set<User>().AsNoTracking().FirstOrDefaultAsync(u => u.TelegramLinkToken == token, cancellationToken);
+
+    public Task<User?> GetByTelegramChatIdAsync(string chatId, CancellationToken cancellationToken = default)
+        => _context.Set<User>().AsNoTracking().FirstOrDefaultAsync(u => u.TelegramChatId == chatId, cancellationToken);
+
+    public Task<UserReminderSettings?> GetReminderSettingsAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        var id = UserId.CreateFromDatabase(userId);
+        return _context.Set<User>()
+            .AsNoTracking()
+            .Where(u => u.Id == id)
+            .Select(u => new UserReminderSettings(u.TelegramChatId, u.Timezone))
+            .FirstOrDefaultAsync(cancellationToken);
+    }
 }

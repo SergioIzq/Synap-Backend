@@ -2,6 +2,7 @@ using MediatR;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using SergioIzq.AspNetCore.Kernel.Controllers;
+using Synap.Application.Features.Reminders.Commands;
 using Synap.Application.Features.Settings.Commands;
 using Synap.Application.Features.Settings.Queries;
 
@@ -44,6 +45,21 @@ public class SettingsController : AbsController
     [EnableRateLimiting(RateLimitPolicies.AiHeavy)]
     public async Task<IActionResult> SetModel([FromBody] SetModelRequest request)
         => await SendAndHandleAsync(new SetGroqModelCommand(request.Model));
+
+    // ---- Telegram, for reminder delivery (specs/reminders) ----
+
+    [HttpGet("telegram")]
+    public async Task<IActionResult> TelegramStatus()
+        => await SendAndHandleAsync(new GetTelegramStatusQuery());
+
+    /// <summary>Issues the single-use code the user forwards to the bot; it is returned only here.</summary>
+    [HttpPost("telegram/link")]
+    public async Task<IActionResult> StartTelegramLink()
+        => await SendAndHandleAsync(new StartTelegramLinkCommand());
+
+    [HttpDelete("telegram")]
+    public async Task<IActionResult> DisconnectTelegram()
+        => await SendAndHandleAsync(new DisconnectTelegramCommand());
 
     public sealed record SaveGroqKeyRequest(string ApiKey);
 

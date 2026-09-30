@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Synap.Application.Features.Assistant.Agent;
 using Synap.Application.Features.Assistant.Queries;
@@ -82,6 +83,7 @@ public class SettingsHandlersTests
     [InlineData(LlmKeyStatus.InvalidKey)]
     [InlineData(LlmKeyStatus.RateLimited)]
     [InlineData(LlmKeyStatus.Unavailable)]
+    [InlineData(LlmKeyStatus.ServiceUnavailable)]
     public async Task SaveGroqApiKey_failed_validation_keeps_previous_key(LlmKeyStatus status)
     {
         GiveUserKey("gsk_previous_key_OLD1");
@@ -93,6 +95,23 @@ public class SettingsHandlersTests
         Assert.Equal(SettingsErrors.FromKeyStatus(status).Message, result.Error.Message);
         Assert.Equal("enc(gsk_previous_key_OLD1)", _user.GroqApiKeyEncrypted);
         Assert.Equal(0, _unitOfWork.SaveCalls);
+    }
+
+    /// <summary>
+    /// specs/user-settings "AI service unreachable during validation": the user is told what
+    /// actually failed. Blaming Groq for a failure between Synap's own containers is what sent a
+    /// whole debugging session after the wrong party.
+    /// </summary>
+    [Fact]
+    public async Task SaveGroqApiKey_does_not_blame_groq_when_the_ai_service_is_what_failed()
+    {
+        _ai.ModelsResult = LlmModelsResult.Failed(LlmKeyStatus.ServiceUnavailable);
+
+        var result = await SaveHandler().Handle(new SaveGroqApiKeyCommand(ValidKey), default);
+
+        Assert.True(result.IsFailure);
+        Assert.DoesNotContain("Groq", result.Error.Message);
+        Assert.Contains("servicio de IA", result.Error.Message);
     }
 
     [Fact]
@@ -201,7 +220,7 @@ public class SettingsHandlersTests
             new CreateNoteCommandHandler(notes, new Assistant.FakeTagRepository(), _unitOfWork, _context, new Assistant.NoopJobQueue()),
             new AddTagCommandHandler(notes, new Assistant.FakeTagRepository(), _unitOfWork, _context),
             new AddMemoryEntryCommandHandler(memory, _unitOfWork, _context));
-        return new(_ai, _context, _users, _protector, notes, memory, new AssistantAgent(_ai, sender, new Assistant.NotesView(notes)));
+        return new(_ai, _context, _users, _protector, notes, memory, new AssistantAgent(_ai, sender, new Assistant.NotesView(notes), NullLogger<AssistantAgent>.Instance));
     }
 
     [Fact]

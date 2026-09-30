@@ -9,6 +9,7 @@ using Serilog;
 using Synap.Api;
 using Synap.Api.Authentication;
 using Synap.Api.Middleware;
+using Synap.Api.Telegram;
 using Synap.Application;
 using Synap.Application.Features.Settings;
 using Synap.Application.Features.Users;
@@ -47,6 +48,25 @@ try
     var builder = WebApplication.CreateBuilder(args);
 
     builder.UseKernelSerilog("Synap");
+
+    // The kernel's logger writes to a browsable HTML file inside the container and nowhere else,
+    // so `docker compose logs synap-api` showed only the two bootstrap lines above: the whole
+    // operational record was unreachable without entering the container, and recreating the
+    // container to apply a fix took the evidence of the failure with it (specs/platform-operations
+    // "Operational logs reachable where the system runs").
+    //
+    // The kernel's logger becomes a sub-logger of a new root that also writes to the console, so
+    // the HTML file keeps exactly the records, the filtering and the format it had. Wrapped rather
+    // than reconfigured: what the file keeps is decided inside the package and is not reachable
+    // through its public options, so rebuilding it by hand would silently change it.
+    var htmlFileLogger = Log.Logger;
+    Log.Logger = new LoggerConfiguration()
+        .MinimumLevel.Information()
+        .WriteTo.Logger(htmlFileLogger)
+        .WriteTo.Console()
+        .CreateLogger();
+    builder.Services.AddSerilog();
+
     builder.WebHost.ConfigureKernelKestrel();
 
     // Kernel bootstrap: CORS, JSON (MVC, reflection-based - no source-gen JSON context needed
@@ -197,6 +217,10 @@ try
     // trusted when it comes from an address listed in ForwardedHeaders:KnownProxies
     // (comma-separated) - trusting it from anyone would let a client pick its own IP and dodge
     // the auth rate limit. See docs/deployment-runbook.md.
+    // Keeps the webhook's rejection records from being flooded by whatever posts to a public
+    // endpoint (specs/reminders "A rejected webhook call is recorded").
+    builder.Services.AddSingleton<WebhookRejectionRecorder>();
+
     builder.Services.Configure<ForwardedHeadersOptions>(options =>
     {
         options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;

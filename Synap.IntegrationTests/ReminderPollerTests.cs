@@ -58,6 +58,7 @@ public class ReminderPollerTests
         services.AddSingleton<ITelegramSender>(telegram);
         services.AddSingleton<IPublisher>(new NoOpPublisher());
         services.AddScoped<ReminderDeliveryService>();
+        services.AddSingleton<WithheldReminderRecorder>();
         services.Configure<AppOptions>(o => o.PublicBaseUrl = "https://synap.test");
         services.Configure<TelegramSettings>(o =>
         {

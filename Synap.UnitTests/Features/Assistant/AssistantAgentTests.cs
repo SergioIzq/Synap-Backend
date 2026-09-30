@@ -30,6 +30,7 @@ public class AssistantAgentTests
     private readonly FakeMemoryRepository _memory = new();
     private readonly FakeReminderRepository _reminders = new();
     private readonly FakeUnitOfWork _unitOfWork = new();
+    private readonly RecordingLogger<AssistantAgent> _logger = new();
     private readonly AssistantAgent _agent;
 
     public AssistantAgentTests()
@@ -40,7 +41,7 @@ public class AssistantAgentTests
             new AddTagCommandHandler(_notes, _tags, _unitOfWork, context),
             new AddMemoryEntryCommandHandler(_memory, _unitOfWork, context),
             new CreateReminderCommandHandler(_reminders, new NotesView(_notes), _unitOfWork, context));
-        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes));
+        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes), _logger);
     }
 
     private Note SeedNote(Guid owner, string title, string content)
@@ -265,6 +266,7 @@ public class AssistantAgentReminderTests
     private readonly FakeMemoryRepository _memory = new();
     private readonly FakeReminderRepository _reminders = new();
     private readonly FakeUnitOfWork _unitOfWork = new();
+    private readonly RecordingLogger<AssistantAgent> _logger = new();
     private readonly AssistantAgent _agent;
 
     public AssistantAgentReminderTests()
@@ -275,7 +277,7 @@ public class AssistantAgentReminderTests
             new AddTagCommandHandler(_notes, _tags, _unitOfWork, context),
             new AddMemoryEntryCommandHandler(_memory, _unitOfWork, context),
             new CreateReminderCommandHandler(_reminders, new NotesView(_notes), _unitOfWork, context));
-        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes));
+        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes), _logger);
     }
 
     private Task<AgentOutcome> AskAsync(string question = "recuérdame algo", string? timezone = Madrid)
@@ -310,8 +312,10 @@ public class AssistantAgentReminderTests
         var system = _ai.StepCalls[0].Messages[0].Content!;
         Assert.Contains("Europe/Madrid", system);
         Assert.Contains(DateTime.UtcNow.ToString("yyyy-MM-dd"), system);
-        Assert.Contains("nearest one in the future", system);
-        Assert.Contains("09:00", system);
+        // The model is told to hand over the wording, not to work the moment out itself
+        // (observable-failures design.md Decision 5): Synap resolves it.
+        Assert.Contains("in their own words", system);
+        Assert.DoesNotContain("ISO 8601", system);
     }
 
     [Fact]
@@ -335,7 +339,7 @@ public class AssistantAgentReminderTests
 
         var tool = Assert.Single(_ai.StepCalls[0].Tools!, t => t.Name == "set_reminder");
         var required = tool.Parameters.GetProperty("required").EnumerateArray().Select(p => p.GetString()).ToList();
-        Assert.Equal(["text", "due_at"], required);
+        Assert.Equal(["text", "when"], required);
         var properties = tool.Parameters.GetProperty("properties");
         Assert.True(properties.TryGetProperty("note_id", out _));
         Assert.True(properties.TryGetProperty("recurrence", out _));
@@ -349,7 +353,7 @@ public class AssistantAgentReminderTests
     {
         var moment = DateTime.UtcNow.AddDays(2);
         Script(
-            Calls(Call("set_reminder", new { text = "Renovar el certificado SSL", due_at = Iso(moment) })),
+            Calls(Call("set_reminder", new { text = "Renovar el certificado SSL", when = Iso(moment) })),
             Text("Hecho, te aviso el viernes a las 9:00."));
 
         var outcome = await AskAsync();
@@ -368,7 +372,7 @@ public class AssistantAgentReminderTests
     public async Task A_recurring_reminder_carries_its_recurrence_into_the_action()
     {
         Script(
-            Calls(Call("set_reminder", new { text = "Revisar copias", due_at = Iso(DateTime.UtcNow.AddDays(1)), recurrence = "weekly:0" })),
+            Calls(Call("set_reminder", new { text = "Revisar copias", when = Iso(DateTime.UtcNow.AddDays(1)), recurrence = "weekly:0" })),
             Text("Todos los lunes."));
 
         var outcome = await AskAsync();
@@ -382,7 +386,7 @@ public class AssistantAgentReminderTests
     {
         var note = _notes.Add(Note.Create(UserId.CreateFromDatabase(Me), NoteType.Text, "Volúmenes de Docker", "contenido"));
         Script(
-            Calls(Call("set_reminder", new { text = "Revisar esto", due_at = Iso(DateTime.UtcNow.AddDays(1)), note_id = note.Id.Value.ToString() })),
+            Calls(Call("set_reminder", new { text = "Revisar esto", when = Iso(DateTime.UtcNow.AddDays(1)), note_id = note.Id.Value.ToString() })),
             Text("Hecho."));
 
         var outcome = await AskAsync();
@@ -396,7 +400,7 @@ public class AssistantAgentReminderTests
     {
         var theirNote = _notes.Add(Note.Create(UserId.CreateFromDatabase(Other), NoteType.Text, "Su nota", "contenido"));
         Script(
-            Calls(Call("set_reminder", new { text = "Espiando", due_at = Iso(DateTime.UtcNow.AddDays(1)), note_id = theirNote.Id.Value.ToString() })),
+            Calls(Call("set_reminder", new { text = "Espiando", when = Iso(DateTime.UtcNow.AddDays(1)), note_id = theirNote.Id.Value.ToString() })),
             Text("No he encontrado esa nota."));
 
         var outcome = await AskAsync();
@@ -409,28 +413,77 @@ public class AssistantAgentReminderTests
     public async Task A_moment_in_the_past_is_refused_and_the_reason_goes_back_to_the_model()
     {
         Script(
-            Calls(Call("set_reminder", new { text = "Tarde", due_at = Iso(DateTime.UtcNow.AddDays(-1)) })),
+            Calls(Call("set_reminder", new { text = "Tarde", when = Iso(DateTime.UtcNow.AddDays(-1)) })),
             Text("Ese momento ya ha pasado, dime otro."));
 
         var outcome = await AskAsync();
 
         Assert.Empty(_reminders.All);
         Assert.Empty(outcome.Answer!.Actions);
-        var toolResult = _ai.StepCalls[1].Messages.Last(m => m.Role == "tool").Content!;
-        Assert.Contains("futuro", toolResult);
+        Assert.Contains("futuro", _ai.StepCalls[1].Messages.Last(m => m.Role == "tool").Content!);
     }
 
+    /// <summary>
+    /// The model now passes the user's own words and Synap resolves them
+    /// (observable-failures design.md Decision 5), so what used to be a refusal is a reminder.
+    /// </summary>
     [Fact]
-    public async Task A_due_at_that_is_not_a_date_is_refused_without_guessing_a_moment()
+    public async Task The_moment_arrives_in_the_users_words_and_is_resolved_here()
     {
         Script(
-            Calls(Call("set_reminder", new { text = "Cuando sea", due_at = "el viernes" })),
-            Text("No he podido interpretar la fecha."));
+            Calls(Call("set_reminder", new { text = "Llamar al banco", when = "mañana a las 9" })),
+            Text("Hecho."));
+
+        var outcome = await AskAsync();
+
+        var reminder = Assert.Single(_reminders.All);
+        Assert.Equal("Llamar al banco", reminder.Text);
+        Assert.True(reminder.DueAt > DateTime.UtcNow);
+        Assert.Single(outcome.Answer!.Actions);
+    }
+
+    /// <summary>
+    /// specs/ai-assistant "Time today honoured", end to end: the wording travels from the model,
+    /// through the resolver, to a reminder in the user's own clock. The reminder that started
+    /// this change was asked for "hoy a las 20:20" and, had it been created at all, 20:20 read as
+    /// UTC would have arrived at 22:20 on the user's phone.
+    /// </summary>
+    [Fact]
+    public async Task The_wording_is_resolved_against_the_users_timezone_not_utc()
+    {
+        Script(
+            Calls(Call("set_reminder", new { text = "Hacer algo", when = "mañana a las 20:20" })),
+            Text("Listo."));
+
+        var outcome = await AskAsync(timezone: Madrid);
+
+        var reminder = Assert.Single(_reminders.All);
+        var tomorrowInMadrid = UserClock.ToLocal(DateTime.UtcNow, Madrid).Date.AddDays(1).Add(new TimeSpan(20, 20, 0));
+        Assert.Equal(UserClock.ToUtc(tomorrowInMadrid, Madrid), reminder.DueAt);
+
+        // The same moment goes back to the model in the user's words, so the answer can state it.
+        var toolResult = _ai.StepCalls[1].Messages.Last(m => m.Role == "tool").Content!;
+        Assert.Contains("20:20", toolResult);
+
+        var action = Assert.Single(outcome.Answer!.Actions);
+        Assert.Equal(reminder.DueAt, action.DueAt);
+    }
+
+    /// <summary>
+    /// specs/ai-assistant "Moment that cannot be resolved": nothing is created and the model is
+    /// told to ask, rather than being left to invent a moment nobody chose.
+    /// </summary>
+    [Fact]
+    public async Task Wording_that_names_no_moment_creates_nothing_and_asks()
+    {
+        Script(
+            Calls(Call("set_reminder", new { text = "Cuando sea", when = "cuando pueda" })),
+            Text("¿Qué día y a qué hora quieres que te avise?"));
 
         var outcome = await AskAsync();
 
         Assert.Empty(_reminders.All);
-        Assert.Contains("ISO 8601", _ai.StepCalls[1].Messages.Last(m => m.Role == "tool").Content!);
+        Assert.Contains("No he entendido para cuándo", _ai.StepCalls[1].Messages.Last(m => m.Role == "tool").Content!);
         Assert.Empty(outcome.Answer!.Actions);
     }
 
@@ -438,7 +491,7 @@ public class AssistantAgentReminderTests
     public async Task An_invalid_recurrence_is_refused()
     {
         Script(
-            Calls(Call("set_reminder", new { text = "Cada dos martes", due_at = Iso(DateTime.UtcNow.AddDays(1)), recurrence = "el tercer martes" })),
+            Calls(Call("set_reminder", new { text = "Cada dos martes", when = Iso(DateTime.UtcNow.AddDays(1)), recurrence = "el tercer martes" })),
             Text("No puedo con esa repetición."));
 
         await AskAsync();
@@ -451,7 +504,7 @@ public class AssistantAgentReminderTests
     {
         var moment = new DateTime(2027, 1, 8, 8, 0, 0, DateTimeKind.Utc);
         Script(
-            Calls(Call("set_reminder", new { text = "Llamar al banco", due_at = Iso(moment) })),
+            Calls(Call("set_reminder", new { text = "Llamar al banco", when = Iso(moment) })),
             Text("El viernes 8 de enero a las 09:00."));
 
         await AskAsync();
@@ -538,4 +591,221 @@ internal sealed class NotesView(FakeNoteRepository notes) : INoteReadRepository
 
     public Task<IReadOnlyList<string>> ListTagsAsync(Guid userId, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
+}
+
+/// <summary>
+/// observable-failures tasks 5.1 to 5.4 - specs/ai-assistant "An answer never claims an action it
+/// did not perform". The failure that motivated it: "Listo, te recuerdo hoy a las 20:20" delivered
+/// word for word while set_reminder was never called and nothing was created.
+/// </summary>
+public class AssistantAgentClaimGuardTests
+{
+    private static readonly Guid Me = Guid.NewGuid();
+    private const string Key = "gsk_me";
+    private const string Claim = "Listo, te recuerdo hoy a las 20:20.";
+
+    private readonly FakeAiServiceClient _ai = new();
+    private readonly FakeNoteRepository _notes = new();
+    private readonly FakeTagRepository _tags = new();
+    private readonly FakeMemoryRepository _memory = new();
+    private readonly FakeReminderRepository _reminders = new();
+    private readonly FakeUnitOfWork _unitOfWork = new();
+    private readonly RecordingLogger<AssistantAgent> _logger = new();
+    private readonly AssistantAgent _agent;
+
+    public AssistantAgentClaimGuardTests()
+    {
+        var context = new FakeUserContext(Me);
+        var sender = new DispatchingSender(
+            new CreateNoteCommandHandler(_notes, _tags, _unitOfWork, context, new NoopJobQueue()),
+            new AddTagCommandHandler(_notes, _tags, _unitOfWork, context),
+            new AddMemoryEntryCommandHandler(_memory, _unitOfWork, context),
+            new CreateReminderCommandHandler(_reminders, new NotesView(_notes), _unitOfWork, context));
+        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes), _logger);
+    }
+
+    private Task<AgentOutcome> AskAsync(string question = "recuérdame hoy a las 20:20 sacar la basura")
+        => _agent.RunAsync(Me, question, [], [], Key, "capable/model", default, "Europe/Madrid");
+
+    private void Script(params AgentStepResult[] steps)
+    {
+        foreach (var step in steps)
+        {
+            _ai.Steps.Enqueue(step);
+        }
+    }
+
+    private static AgentStepResult Text(string text) => new(AgentStepStatus.Ok, text, []);
+
+    private static AgentStepResult Calls(params AgentToolCall[] calls) => new(AgentStepStatus.Ok, null, calls);
+
+    private static AgentToolCall Call(string name, object arguments)
+        => new("c1", name, JsonSerializer.SerializeToElement(arguments));
+
+    private bool Classified(int step)
+        => _ai.StepCalls[step].Messages[0].Content == AgentClaimGuard.ClassifierInstructions;
+
+    // ---- Task 5.1: the classification, and only when nothing was performed ----
+
+    [Fact]
+    public async Task An_answer_with_no_actions_is_classified_before_it_is_delivered()
+    {
+        Script(Text(Claim), Text("NO"));
+
+        var outcome = await AskAsync();
+
+        Assert.True(Classified(1), "the second request must be the classification");
+        Assert.Contains(Claim, _ai.StepCalls[1].Messages[1].Content);
+        // The classifier is asked, not offered tools: it judges, it does not act.
+        Assert.Null(_ai.StepCalls[1].Tools);
+        Assert.Equal(Key, _ai.StepCalls[1].Key);
+        // A negative classification changes nothing: the answer is the model's own.
+        Assert.Equal(Claim, outcome.Answer!.Answer);
+    }
+
+    [Fact]
+    public async Task An_answer_that_performed_an_action_is_not_classified()
+    {
+        Script(
+            Calls(Call("create_note", new { title = "Basura", content = "Sacar la basura" })),
+            Text("Apuntado."));
+
+        var outcome = await AskAsync();
+
+        Assert.Equal(2, _ai.StepCalls.Count);
+        Assert.Equal("Apuntado.", outcome.Answer!.Answer);
+        Assert.Single(outcome.Answer.Actions);
+    }
+
+    [Fact]
+    public async Task An_answer_with_no_text_is_not_classified()
+    {
+        Script(Text("   "));
+
+        await AskAsync();
+
+        Assert.Single(_ai.StepCalls);
+    }
+
+    [Fact]
+    public async Task A_classification_that_could_not_be_made_leaves_the_answer_alone()
+    {
+        Script(Text(Claim), AgentStepResult.Failed(AgentStepStatus.RateLimited));
+
+        var outcome = await AskAsync();
+
+        Assert.Equal(Claim, outcome.Answer!.Answer);
+        Assert.Equal(AssistantAnswerStatus.Ok, outcome.Answer.Status);
+    }
+
+    // ---- Task 5.2: one retry, inside the cap ----
+
+    [Fact]
+    public async Task A_claimed_action_is_retried_once_and_the_claim_stands_when_it_is_performed()
+    {
+        Script(
+            Text(Claim),
+            Text("YES"),
+            Calls(Call("set_reminder", new { text = "sacar la basura", when = "hoy a las 20:20" })));
+
+        var outcome = await AskAsync();
+
+        // The retry is offered the tools and told the action has not happened yet.
+        Assert.NotNull(_ai.StepCalls[2].Tools);
+        Assert.Contains("no action", _ai.StepCalls[2].Messages[^1].Content);
+        Assert.Equal(Claim, _ai.StepCalls[2].Messages[^2].Content);
+
+        Assert.Single(_reminders.All);
+        var action = Assert.Single(outcome.Answer!.Actions);
+        Assert.Equal(AssistantActionType.ReminderCreated, action.Type);
+        // The claim was true once the action happened, so it is what the user reads.
+        Assert.Equal(Claim, outcome.Answer.Answer);
+        Assert.Equal(3, outcome.Steps);
+    }
+
+    [Fact]
+    public async Task The_guard_never_takes_a_question_past_the_request_cap()
+    {
+        Script(
+            Calls(Call("search_notes", new { query = "basura" })),
+            Text(Claim),
+            Text("YES"),
+            Text("Sigo sin hacerlo."),
+            Text("una más"));
+
+        var outcome = await AskAsync();
+
+        Assert.True(_ai.StepCalls.Count <= AssistantAgent.MaxSteps, "the guard must fit inside the existing budget");
+        Assert.Equal(AssistantAgent.MaxSteps, outcome.Steps);
+    }
+
+    [Fact]
+    public async Task With_no_room_to_retry_the_claim_is_replaced_without_one()
+    {
+        Script(
+            Calls(Call("search_notes", new { query = "basura" })),
+            Calls(Call("search_notes", new { query = "cubo" })),
+            Text(Claim),
+            Text("YES"));
+
+        var outcome = await AskAsync();
+
+        Assert.Equal(AssistantAgent.MaxSteps, _ai.StepCalls.Count);
+        Assert.Equal(AgentClaimGuard.CouldNotDoItMessage, outcome.Answer!.Answer);
+    }
+
+    // ---- Task 5.3: the claim is replaced, never delivered ----
+
+    [Fact]
+    public async Task A_claim_the_retry_does_not_make_true_never_reaches_the_user()
+    {
+        Script(Text(Claim), Text("YES"), Text("Ya está hecho, te aviso a las 20:20."));
+
+        var outcome = await AskAsync();
+
+        Assert.Equal(AgentClaimGuard.CouldNotDoItMessage, outcome.Answer!.Answer);
+        Assert.DoesNotContain("20:20", outcome.Answer.Answer);
+        Assert.DoesNotContain("Listo", outcome.Answer.Answer);
+        Assert.Empty(outcome.Answer.Actions);
+        Assert.Empty(_reminders.All);
+        Assert.Equal(AssistantAnswerStatus.Ok, outcome.Answer.Status);
+    }
+
+    [Fact]
+    public async Task A_retry_whose_action_fails_is_still_not_reported_as_done()
+    {
+        // A reminder in the past: the command refuses it, so nothing is performed.
+        Script(
+            Text(Claim),
+            Text("YES"),
+            Calls(Call("set_reminder", new { text = "sacar la basura", when = "cuando pueda" })));
+
+        var outcome = await AskAsync();
+
+        Assert.Empty(_reminders.All);
+        Assert.Equal(AgentClaimGuard.CouldNotDoItMessage, outcome.Answer!.Answer);
+    }
+
+    // ---- Task 5.4: the guard is itself observable ----
+
+    [Fact]
+    public async Task Replacing_a_claim_is_recorded()
+    {
+        Script(Text(Claim), Text("YES"), Text("Hecho."));
+
+        await AskAsync();
+
+        var record = Assert.Single(_logger.Records, r => r.Contains("claimed an action"));
+        Assert.Contains(Me.ToString(), record);
+    }
+
+    [Fact]
+    public async Task A_delivered_answer_records_nothing()
+    {
+        Script(Text(Claim), Text("NO"));
+
+        await AskAsync();
+
+        Assert.Empty(_logger.Records);
+    }
 }

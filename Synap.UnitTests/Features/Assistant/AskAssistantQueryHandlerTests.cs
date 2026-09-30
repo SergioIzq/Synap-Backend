@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using Synap.Application.Features.Assistant.Agent;
 using Synap.Application.Features.Assistant.Queries;
 using Synap.Application.Features.Memory.Commands;
@@ -43,7 +44,7 @@ public class AskAssistantQueryHandlerTests
             new CreateNoteCommandHandler(_notes, tags, unitOfWork, context, new NoopJobQueue()),
             new AddTagCommandHandler(_notes, tags, unitOfWork, context),
             new AddMemoryEntryCommandHandler(_memory, unitOfWork, context));
-        var agent = new AssistantAgent(_ai, sender, new NotesView(_notes));
+        var agent = new AssistantAgent(_ai, sender, new NotesView(_notes), NullLogger<AssistantAgent>.Instance);
         return new(_ai, context, _users, _protector, _notes, _memory, agent);
     }
 
@@ -156,7 +157,9 @@ public class AskAssistantQueryHandlerTests
         Assert.Equal("Con systemctl restart nginx.", result.Value.Answer);
         Assert.Empty(result.Value.Actions);
         Assert.Empty(_ai.AskCalls);
-        var messages = Assert.Single(_ai.StepCalls).Messages;
+        // The second request is the claim guard's classification, which this answer makes no
+        // claim in (observable-failures design.md Decision 4).
+        var messages = _ai.StepCalls[0].Messages;
         Assert.Contains("- uso Ubuntu", messages[0].Content);
         Assert.Equal("¿cómo configuré nginx?", messages[1].Content);
         Assert.Equal(Key, _ai.StepCalls[0].Key);

@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using Synap.Application.Features.Reminders;
 using Synap.Shared.Application.Interfaces;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace Synap.Infrastructure.Services.Telegram;
@@ -124,12 +125,30 @@ public sealed class TelegramSender : ITelegramSender
             // Telegram explains itself in the body ("bot was blocked by the user", "chat not
             // found"): worth logging, since it is the only trace of why a reminder never arrived.
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            _logger.LogWarning("Telegram {Method} failed with {Status}: {Body}", method, (int)response.StatusCode, body);
+            _logger.LogWarning("Telegram {Method} was refused with {Status}: {Body}", method, (int)response.StatusCode, body);
+            return false;
+        }
+        catch (Exception exception) when (exception is NotSupportedException or UriFormatException or InvalidOperationException or JsonException)
+        {
+            // Nothing left the process: the request could not even be built. A bot token whose
+            // colon makes the path parse as a URI scheme lands here, and for a whole afternoon it
+            // was reported as Telegram being unreachable while no packet had ever been sent
+            // (specs/platform-operations "A recorded failure names its own cause").
+            _logger.LogWarning(
+                exception, "Telegram {Method} was never sent: the request could not be built ({Exception})", method, exception.GetType().Name);
+            return false;
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // HttpClient's own timeout arrives as a cancellation nobody asked for. Distinguished
+            // from the caller cancelling, which must still propagate.
+            _logger.LogWarning("Telegram {Method} timed out after {Timeout}", method, _httpClient.Timeout);
             return false;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            _logger.LogWarning(exception, "Telegram {Method} could not be reached", method);
+            _logger.LogWarning(
+                exception, "Telegram {Method} could not be reached: {Exception}", method, exception.GetType().Name);
             return false;
         }
     }

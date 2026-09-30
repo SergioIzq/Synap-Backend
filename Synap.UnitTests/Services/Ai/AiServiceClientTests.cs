@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Synap.Domain;
 using Synap.Infrastructure.Services.Ai;
@@ -18,6 +19,26 @@ public class AiServiceClientTests
     {
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://ai-service.test") };
         return new AiServiceClient(httpClient, NullLogger<AiServiceClient>.Instance);
+    }
+
+    private static (AiServiceClient Client, List<string> Records) CreateRecordingClient(FakeHttpMessageHandler handler)
+    {
+        var logger = new RecordingLogger<AiServiceClient>();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://ai-service.test") };
+        return (new AiServiceClient(httpClient, logger), logger.Records);
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<string> Records { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Records.Add(formatter(state, exception));
     }
 
     [Fact]
@@ -137,14 +158,39 @@ public class AiServiceClientTests
         Assert.Empty(result.Models);
     }
 
+    /// <summary>
+    /// specs/platform-operations "Failure of an intermediate hop": not reaching Synap's own AI
+    /// service is not Groq failing - Groq was never contacted.
+    /// </summary>
     [Fact]
-    public async Task ListModelsAsync_degrades_to_unavailable_when_unreachable()
+    public async Task ListModelsAsync_blames_the_ai_service_not_groq_when_it_is_unreachable()
     {
         var handler = FakeHttpMessageHandler.Throwing(new HttpRequestException("Connection refused"));
 
-        var result = await CreateClient(handler).ListModelsAsync("gsk_user_key");
+        var (client, records) = CreateRecordingClient(handler);
+        var result = await client.ListModelsAsync("gsk_user_key");
 
-        Assert.Equal(LlmKeyStatus.Unavailable, result.Status);
+        Assert.Equal(LlmKeyStatus.ServiceUnavailable, result.Status);
+        var record = Assert.Single(records);
+        Assert.Contains("The AI service could not be reached", record);
+        Assert.Contains(nameof(HttpRequestException), record);
+    }
+
+    /// <summary>The 401 between Synap's own containers that reached the user as "Groq unavailable".</summary>
+    [Fact]
+    public async Task ListModelsAsync_records_a_refusal_with_its_status_and_body()
+    {
+        var handler = FakeHttpMessageHandler.ReturningJson(
+            HttpStatusCode.Unauthorized, """{"detail": "Invalid internal API key"}""");
+
+        var (client, records) = CreateRecordingClient(handler);
+        var result = await client.ListModelsAsync("gsk_user_key");
+
+        Assert.Equal(LlmKeyStatus.ServiceUnavailable, result.Status);
+        var record = Assert.Single(records);
+        Assert.Contains("refused", record);
+        Assert.Contains("401", record);
+        Assert.Contains("Invalid internal API key", record);
     }
 
     [Fact]

@@ -7,7 +7,7 @@ import logging
 import httpx
 import pytest
 
-from app.llm.groq_provider import SYSTEM_PROMPT, GroqProvider
+from app.llm.groq_provider import ACTIONS_UNAVAILABLE_INSTRUCTIONS, SYSTEM_PROMPT, GroqProvider
 from app.llm.provider import (
     AnswerScope,
     HistoryTurn,
@@ -236,6 +236,10 @@ async def test_chat_step_without_tools_sends_none():
         (400, {"message": "`tools` is not supported with this model", "type": "invalid_request_error"}, LlmToolsUnsupportedError),
         (400, {"message": "Failed to call a function.", "code": "tool_use_failed"}, LlmToolCallFailedError),
         (400, {"message": "context length exceeded"}, LlmProviderUnavailableError),
+        # Mentions tools but is not about tool support: a schema Groq rejected. Reading this as
+        # "the model has no tools" is what silently dropped the whole conversation's actions
+        # (specs/ai-assistant "Refusal for another reason").
+        (400, {"message": "Invalid schema for function 'set_reminder': unknown field"}, LlmProviderUnavailableError),
         (401, {}, LlmInvalidCredentialsError),
         (429, {}, LlmRateLimitedError),
         (503, {}, LlmProviderUnavailableError),
@@ -246,6 +250,19 @@ async def test_chat_step_maps_errors(status_code, error, expected):
 
     with pytest.raises(expected):
         await provider.chat_step([{"role": "user", "content": "q"}], TOOLS, SECRET_KEY, "m")
+
+
+@pytest.mark.asyncio
+async def test_a_tools_refusal_keeps_what_groq_said():
+    """specs/platform-operations "Classified failure keeps its cause": the category alone leaves
+    whoever is debugging with nothing to go on."""
+    said = "`tools` is not supported with this model"
+    provider = _provider(lambda request: httpx.Response(400, json={"error": {"message": said}}))
+
+    with pytest.raises(LlmToolsUnsupportedError) as raised:
+        await provider.chat_step([{"role": "user", "content": "q"}], TOOLS, SECRET_KEY, "m")
+
+    assert said in str(raised.value)
 
 
 # --- memory (assistant-agent-foundations task 4.3) ------------------------------------------
@@ -290,3 +307,15 @@ async def test_actions_unavailable_explains_why_before_the_memory(reason, hint):
     system = seen["messages"][0]["content"]
     assert hint in system
     assert system.index(hint) < system.index("- uso Ubuntu")
+
+
+@pytest.mark.parametrize("reason", ["scope", "model"])
+def test_every_action_is_named_including_reminders(reason):
+    """observable-failures task 5.5 - reminders were the fourth action and the only one left out
+    of both texts, so a model without actions had no instruction about them and promised one."""
+    text = ACTIONS_UNAVAILABLE_INSTRUCTIONS[reason]
+
+    assert "reminders" in text
+    assert "Recordatorios" in text
+    for action in ("create notes", "add tags", "remember facts"):
+        assert action in text

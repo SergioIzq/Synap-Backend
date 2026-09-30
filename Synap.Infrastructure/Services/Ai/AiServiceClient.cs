@@ -24,6 +24,33 @@ public sealed class AiServiceClient : IAiServiceClient
         _logger = logger;
     }
 
+    /// <summary>
+    /// True when the AI service accepted the call. A refusal is recorded here, with the status and
+    /// what the service itself said, because the two are different failures with different fixes:
+    /// a 401 between Synap's own containers used to reach the user as "Groq could not be reached",
+    /// naming a party that had never been contacted (specs/platform-operations "Failure of an
+    /// intermediate hop").
+    /// </summary>
+    private async Task<bool> AcceptedAsync(HttpResponseMessage response, string operation, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return true;
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        _logger.LogWarning(
+            "The AI service refused {Operation} with {Status}: {Body}",
+            operation,
+            (int)response.StatusCode,
+            body.Length > BodyLogLimit ? body[..BodyLogLimit] : body);
+
+        return false;
+    }
+
+    /// <summary>Enough of the service's answer to tell the failures apart, never a whole payload.</summary>
+    private const int BodyLogLimit = 500;
+
     public async Task GenerateEmbeddingAsync(Guid noteId, Guid userId, string? title, string content, CancellationToken cancellationToken = default)
     {
         try
@@ -33,11 +60,11 @@ public sealed class AiServiceClient : IAiServiceClient
                 new GenerateEmbeddingRequest(noteId, userId, title, content),
                 cancellationToken);
 
-            response.EnsureSuccessStatusCode();
+            await AcceptedAsync(response, $"generating the embedding of note {noteId}", cancellationToken);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
-            _logger.LogWarning(ex, "Could not generate embedding for note {NoteId}", noteId);
+            _logger.LogWarning(ex, "The AI service could not be reached while generating the embedding of note {NoteId} ({Exception})", noteId, ex.GetType().Name);
         }
     }
 
@@ -54,7 +81,7 @@ public sealed class AiServiceClient : IAiServiceClient
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
-            _logger.LogWarning(ex, "Could not fetch related notes for note {NoteId}", noteId);
+            _logger.LogWarning(ex, "The AI service could not be reached while fetching related notes for note {NoteId} ({Exception})", noteId, ex.GetType().Name);
             return [];
         }
     }
@@ -91,7 +118,10 @@ public sealed class AiServiceClient : IAiServiceClient
                     }),
                 cancellationToken);
 
-            response.EnsureSuccessStatusCode();
+            if (!await AcceptedAsync(response, $"answering a question for user {userId}", cancellationToken))
+            {
+                return AssistantAnswer.Failed(AssistantAnswer.UnavailableMessage, AssistantAnswerStatus.Unavailable);
+            }
 
             var result = await response.Content.ReadFromJsonAsync<AskResponse>(cancellationToken)
                 ?? throw new InvalidOperationException("Empty response from AI service.");
@@ -106,7 +136,7 @@ public sealed class AiServiceClient : IAiServiceClient
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
         {
             // Only the user ID is logged - never the request body, which carries the user's key.
-            _logger.LogWarning(ex, "AI service unavailable while answering a question for user {UserId}", userId);
+            _logger.LogWarning(ex, "The AI service could not be reached while answering a question for user {UserId} ({Exception})", userId, ex.GetType().Name);
             return AssistantAnswer.Failed(AssistantAnswer.UnavailableMessage, AssistantAnswerStatus.Unavailable);
         }
     }
@@ -120,7 +150,10 @@ public sealed class AiServiceClient : IAiServiceClient
                 new ListModelsRequest(groqApiKey),
                 cancellationToken);
 
-            response.EnsureSuccessStatusCode();
+            if (!await AcceptedAsync(response, "listing LLM models", cancellationToken))
+            {
+                return LlmModelsResult.Failed(LlmKeyStatus.ServiceUnavailable);
+            }
 
             var result = await response.Content.ReadFromJsonAsync<ListModelsResponse>(cancellationToken)
                 ?? throw new InvalidOperationException("Empty response from AI service.");
@@ -139,8 +172,9 @@ public sealed class AiServiceClient : IAiServiceClient
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
         {
-            _logger.LogWarning(ex, "AI service unavailable while listing LLM models");
-            return LlmModelsResult.Failed(LlmKeyStatus.Unavailable);
+            _logger.LogWarning(ex, "The AI service could not be reached while listing LLM models ({Exception})", ex.GetType().Name);
+            // Not LlmKeyStatus.Unavailable: Groq was never contacted, so it cannot be what failed.
+            return LlmModelsResult.Failed(LlmKeyStatus.ServiceUnavailable);
         }
     }
 
@@ -164,7 +198,10 @@ public sealed class AiServiceClient : IAiServiceClient
                 groqModel);
 
             using var response = await _httpClient.PostAsJsonAsync("/internal/llm/step", request, StepJsonOptions, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            if (!await AcceptedAsync(response, "an assistant step", cancellationToken))
+            {
+                return AgentStepResult.Failed(AgentStepStatus.Unavailable);
+            }
 
             var result = await response.Content.ReadFromJsonAsync<StepResponse>(cancellationToken)
                 ?? throw new InvalidOperationException("Empty response from AI service.");
@@ -189,7 +226,7 @@ public sealed class AiServiceClient : IAiServiceClient
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
         {
             // Never the request body: it carries the user's key and their notes.
-            _logger.LogWarning(ex, "AI service unavailable during an assistant step");
+            _logger.LogWarning(ex, "The AI service could not be reached during an assistant step ({Exception})", ex.GetType().Name);
             return AgentStepResult.Failed(AgentStepStatus.Unavailable);
         }
     }
@@ -200,14 +237,17 @@ public sealed class AiServiceClient : IAiServiceClient
         {
             using var response = await _httpClient.PostAsJsonAsync(
                 "/internal/search", new SearchRequest(userId, query, limit), cancellationToken);
-            response.EnsureSuccessStatusCode();
+            if (!await AcceptedAsync(response, $"searching notes for user {userId}", cancellationToken))
+            {
+                return [];
+            }
 
             var results = await response.Content.ReadFromJsonAsync<List<SearchResultResponse>>(cancellationToken) ?? [];
             return results.Select(r => new NoteSearchHit(r.Id, r.Title, r.Type, r.Tags, r.Snippet)).ToList();
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
         {
-            _logger.LogWarning(ex, "AI service unavailable while searching notes for user {UserId}", userId);
+            _logger.LogWarning(ex, "The AI service could not be reached while searching notes for user {UserId} ({Exception})", userId, ex.GetType().Name);
             return [];
         }
     }

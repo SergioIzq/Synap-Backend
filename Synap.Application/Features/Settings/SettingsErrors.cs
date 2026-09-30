@@ -21,6 +21,9 @@ public static class SettingsErrors
     public static readonly Error AiServiceUnavailable = Error.Validation("El servicio de IA de Synap no está disponible, así que no se ha podido validar la API key. Inténtalo de nuevo más tarde.");
     public static readonly Error GroqModelUnknown = Error.Validation("Ese modelo no está disponible para tu API key.");
 
+    /// <summary>The hour is a whole hour of the user's own day; nothing else is a briefing time.</summary>
+    public static readonly Error BriefingHourInvalid = Error.Validation("Elige una hora del día, de 0 a 23, para recibir el briefing.");
+
     /// <summary>Maps a failed key check to the error the user sees; Ok is not a failure.</summary>
     public static Error FromKeyStatus(LlmKeyStatus status) => status switch
     {

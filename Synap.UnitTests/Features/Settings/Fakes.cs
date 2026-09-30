@@ -21,6 +21,14 @@ internal sealed class FakeUserRepository : IUserWriteRepository
     public Task<User?> GetByIdAsync(Guid id, CancellationToken cancellationToken)
         => Task.FromResult(_users.GetValueOrDefault(id));
 
+    /// <summary>The same narrowing the real query does; whether the hour has come is the caller's.</summary>
+    public Task<IReadOnlyList<User>> ListBriefingCandidatesAsync(
+        DateOnly maxLocalDate, int limit, CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<User>>(_users.Values
+            .Where(u => u.BriefingEnabled && (u.BriefingLastResolvedOn is null || u.BriefingLastResolvedOn < maxLocalDate))
+            .Take(limit)
+            .ToList());
+
     void SergioIzq.Domain.Kernel.Interfaces.Repositories.IWriteRepository<User, UserId>.Add(User entity) => Add(entity);
 
     public Task CreateAsync(User entity, CancellationToken cancellationToken)

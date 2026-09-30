@@ -15,6 +15,7 @@ public static class DependencyInjection
         services.AddKernelDependencyOrchestration();
 
         services.AddScoped<AssistantAgent>();
+        services.AddScoped<Features.Briefing.BriefingContentService>();
 
         return services;
     }

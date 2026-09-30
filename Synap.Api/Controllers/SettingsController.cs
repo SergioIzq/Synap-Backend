@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using SergioIzq.AspNetCore.Kernel.Controllers;
 using Synap.Application.Features.Reminders.Commands;
+using Synap.Application.Features.Briefing.Commands;
 using Synap.Application.Features.Settings.Commands;
 using Synap.Application.Features.Settings.Queries;
 
@@ -46,6 +47,21 @@ public class SettingsController : AbsController
     public async Task<IActionResult> SetModel([FromBody] SetModelRequest request)
         => await SendAndHandleAsync(new SetGroqModelCommand(request.Model));
 
+    // ---- The morning briefing (specs/briefing) ----
+
+    /// <summary>Turns it on or off and sets the local hour; the hour is kept when turning it off.</summary>
+    [HttpPut("briefing")]
+    public async Task<IActionResult> SetBriefing([FromBody] SetBriefingRequest request)
+        => await SendAndHandleAsync(new SetBriefingCommand(request.Enabled, request.Hour));
+
+    /// <summary>
+    /// Sends the briefing now, without waiting for the chosen hour and without consuming the day's
+    /// automatic one (specs/briefing "A briefing can be asked for at any moment").
+    /// </summary>
+    [HttpPost("briefing/send")]
+    public async Task<IActionResult> SendBriefingNow()
+        => await SendAndHandleAsync(new SendBriefingNowCommand());
+
     // ---- Telegram, for reminder delivery (specs/reminders) ----
 
     [HttpGet("telegram")]
@@ -64,4 +80,7 @@ public class SettingsController : AbsController
     public sealed record SaveGroqKeyRequest(string ApiKey);
 
     public sealed record SetModelRequest(string? Model);
+
+    /// <summary>Hour is the local hour of the user's own day, 0-23; ignored when turning it off.</summary>
+    public sealed record SetBriefingRequest(bool Enabled, int? Hour);
 }

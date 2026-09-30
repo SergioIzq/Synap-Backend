@@ -60,6 +60,16 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.HasIndex(u => u.TelegramLinkToken);
         builder.HasIndex(u => u.TelegramChatId);
 
+        // The morning briefing (daily-briefing design.md Decision 3). The resolved day is a date,
+        // not a timestamp: the question is always "has this user been briefed on *their* today?".
+        builder.Property(u => u.BriefingEnabled).HasColumnName("briefing_enabled").IsRequired().HasDefaultValue(false);
+        builder.Property(u => u.BriefingHour).HasColumnName("briefing_hour");
+        builder.Property(u => u.BriefingLastResolvedOn).HasColumnName("briefing_last_resolved_on");
+
+        // The sweep asks for the users it might owe a briefing, which is nobody until someone
+        // turns it on - a filtered index keeps that question free on a deployment where no one has.
+        builder.HasIndex(u => u.BriefingEnabled).HasFilter("briefing_enabled");
+
         builder.Property(u => u.FechaCreacion)
             .HasColumnName("created_at")
             .IsRequired()

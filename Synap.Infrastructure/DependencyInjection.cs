@@ -16,6 +16,7 @@ using Synap.Infrastructure.Services.Ai;
 using Synap.Infrastructure.Services.Auth;
 using Synap.Infrastructure.Services.Bookmarks;
 using Synap.Infrastructure.Services.Email;
+using Synap.Application.Features.Briefing;
 using Synap.Application.Features.Reminders;
 using Synap.Infrastructure.Services.Secrets;
 using Synap.Infrastructure.Services.Telegram;
@@ -63,6 +64,7 @@ public static class DependencyInjection
 
         services.AddScoped<IReminderWriteRepository, ReminderWriteRepository>();
         services.AddScoped<IReminderReadRepository, ReminderReadRepository>();
+        services.AddScoped<IBriefingReadRepository, Persistence.Data.Briefing.BriefingReadRepository>();
 
         // Built eagerly: a missing or too-short JWT_SECRET_KEY stops the API at startup with a
         // clear message instead of failing every login with a 500.
@@ -94,6 +96,13 @@ public static class DependencyInjection
         // reminders it has already reported as undeliverable - has to outlive the tick.
         services.AddSingleton<WithheldReminderRecorder>();
         services.AddHostedService<ReminderPollerHostedService>();
+
+        // The morning briefing (daily-briefing design.md Decision 2): same shape, its own job, so
+        // a briefing that fails cannot cost anyone a reminder.
+        services.AddScoped<BriefingDispatcher>();
+        services.AddScoped<BriefingDeliveryService>();
+        services.AddSingleton<WithheldBriefingRecorder>();
+        services.AddHostedService<BriefingSweepHostedService>();
 
         services.AddHttpClient<ITelegramSender, TelegramSender>(client =>
         {

@@ -11,6 +11,20 @@ public sealed class UserWriteRepository : AbsWriteRepository<User, UserId>, IUse
     {
     }
 
+    public async Task<IReadOnlyList<User>> ListBriefingCandidatesAsync(
+        DateOnly maxLocalDate, int limit, CancellationToken cancellationToken = default)
+    {
+        // The filtered index IX_users_briefing_enabled covers this, so on a deployment where
+        // nobody has turned the briefing on it is no work at all.
+        return await Context.Set<User>()
+            .AsTracking()
+            .Where(u => u.BriefingEnabled
+                     && (u.BriefingLastResolvedOn == null || u.BriefingLastResolvedOn < maxLocalDate))
+            .OrderBy(u => u.Id)
+            .Take(limit)
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task DeleteWithAllDataAsync(Guid userId, CancellationToken cancellationToken = default)
     {
         // Raw SQL in a transaction: note_tags and note_embeddings go with their notes (ON DELETE

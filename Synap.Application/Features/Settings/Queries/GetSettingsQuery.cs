@@ -30,6 +30,9 @@ public sealed class GetSettingsQueryHandler : IQueryHandler<GetSettingsQuery, Se
             return Result.Failure<SettingsResponse>(SettingsErrors.UserNotFound);
         }
 
-        return Result.Success(new SettingsResponse(user.Email.Value, AiSettingsResponse.From(user, _aiOptions.DefaultGroqModel)));
+        return Result.Success(new SettingsResponse(
+            user.Email.Value,
+            AiSettingsResponse.From(user, _aiOptions.DefaultGroqModel),
+            BriefingSettingsResponse.From(user)));
     }
 }

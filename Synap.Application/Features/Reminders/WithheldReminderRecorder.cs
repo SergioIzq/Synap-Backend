@@ -15,23 +15,33 @@ namespace Synap.Application.Features.Reminders;
 /// of ids, dropped wholesale once it grows past a size no personal vault reaches; the cost of
 /// that is one repeated record, not a leak.
 /// </summary>
-public sealed class WithheldReminderRecorder
+public abstract class WithheldRecorder
 {
     private const int MaxRemembered = 1_000;
 
     private readonly ConcurrentDictionary<Guid, byte> _recorded = new();
 
-    /// <summary>True the first time this reminder is withheld, false while it stays remembered.</summary>
-    public bool ShouldRecord(Guid reminderId)
+    /// <summary>True the first time this id is withheld, false while it stays remembered.</summary>
+    public bool ShouldRecord(Guid id)
     {
         if (_recorded.Count >= MaxRemembered)
         {
             _recorded.Clear();
         }
 
-        return _recorded.TryAdd(reminderId, 0);
+        return _recorded.TryAdd(id, 0);
     }
 
     /// <summary>Delivered or cancelled: the next time it is withheld is worth saying again.</summary>
-    public void Forget(Guid reminderId) => _recorded.TryRemove(reminderId, out _);
+    public void Forget(Guid id) => _recorded.TryRemove(id, out _);
 }
+
+/// <summary>Reminders that fell due with no chat to deliver them to.</summary>
+public sealed class WithheldReminderRecorder : WithheldRecorder;
+
+/// <summary>
+/// Users whose briefing could not be delivered for want of a linked chat (specs/briefing "Briefing
+/// on, Telegram not connected"). Same rule, same reason, its own set - a type of its own so both
+/// can be singletons without sharing one bag of ids.
+/// </summary>
+public sealed class WithheldBriefingRecorder : WithheldRecorder;

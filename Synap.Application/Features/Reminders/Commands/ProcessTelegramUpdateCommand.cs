@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using SergioIzq.Application.Kernel.Messaging;
 using SergioIzq.Domain.Kernel.Abstractions.Results;
 using SergioIzq.Domain.Kernel.Interfaces;
+using Synap.Application.Features.Briefing;
 using Synap.Domain;
 using Synap.Shared.Application.Interfaces;
 
@@ -30,6 +31,10 @@ public sealed class ProcessTelegramUpdateCommandHandler : ICommandHandler<Proces
     public const string LinkedMessage = "¡Listo! Recibirás tus recordatorios aquí 🔔";
     public const string LinkFailedMessage = "Ese código no vale o ha caducado. Genera uno nuevo en Configuración y vuelve a enviármelo.";
     public const string UnknownCommandMessage = "Soy el bot de Synap. Para recibir tus recordatorios aquí, ve a Configuración en Synap y envíame el código que te dé.";
+    public const string BriefingFailedMessage = "No he podido prepararte el briefing ahora mismo. Inténtalo de nuevo en un momento.";
+
+    /// <summary>The briefing on demand; the only command besides /start that the bot acts on.</summary>
+    public const string BriefingCommand = "/briefing";
 
     private static readonly TimeSpan SnoozeHour = TimeSpan.FromHours(1);
     private static readonly TimeSpan MorningHour = TimeSpan.FromHours(9);
@@ -37,6 +42,7 @@ public sealed class ProcessTelegramUpdateCommandHandler : ICommandHandler<Proces
     private readonly ISender _sender;
     private readonly IReminderWriteRepository _reminderWriteRepository;
     private readonly IUserReadRepository _userReadRepository;
+    private readonly BriefingDispatcher _briefingDispatcher;
     private readonly ITelegramSender _telegramSender;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<ProcessTelegramUpdateCommandHandler> _logger;
@@ -45,6 +51,7 @@ public sealed class ProcessTelegramUpdateCommandHandler : ICommandHandler<Proces
         ISender sender,
         IReminderWriteRepository reminderWriteRepository,
         IUserReadRepository userReadRepository,
+        BriefingDispatcher briefingDispatcher,
         ITelegramSender telegramSender,
         IUnitOfWork unitOfWork,
         ILogger<ProcessTelegramUpdateCommandHandler> logger)
@@ -52,6 +59,7 @@ public sealed class ProcessTelegramUpdateCommandHandler : ICommandHandler<Proces
         _sender = sender;
         _reminderWriteRepository = reminderWriteRepository;
         _userReadRepository = userReadRepository;
+        _briefingDispatcher = briefingDispatcher;
         _telegramSender = telegramSender;
         _unitOfWork = unitOfWork;
         _logger = logger;
@@ -77,7 +85,19 @@ public sealed class ProcessTelegramUpdateCommandHandler : ICommandHandler<Proces
     private async Task HandleMessageAsync(TelegramIncomingMessage message, CancellationToken cancellationToken)
     {
         var text = message.Text?.Trim();
-        if (string.IsNullOrEmpty(text) || !text.StartsWith("/start", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrEmpty(text))
+        {
+            await ReplyAsync(message.ChatId, UnknownCommandMessage, cancellationToken);
+            return;
+        }
+
+        if (text.StartsWith(BriefingCommand, StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleBriefingAsync(message.ChatId, cancellationToken);
+            return;
+        }
+
+        if (!text.StartsWith("/start", StringComparison.OrdinalIgnoreCase))
         {
             await ReplyAsync(message.ChatId, UnknownCommandMessage, cancellationToken);
             return;
@@ -89,6 +109,33 @@ public sealed class ProcessTelegramUpdateCommandHandler : ICommandHandler<Proces
         // The same message whether the code was unknown, expired or already used: nothing about any
         // account leaks to whoever sent it (specs/reminders "Unknown code").
         await ReplyAsync(message.ChatId, linked is { IsSuccess: true, Value: true } ? LinkedMessage : LinkFailedMessage, cancellationToken);
+    }
+
+    // ---- /briefing (daily-briefing task 5.4) ----
+
+    /// <summary>
+    /// The briefing on demand, for whoever this chat belongs to (specs/briefing "Asked for from
+    /// the bot"). A chat linked to no account gets the reply anything unrecognised gets: it learns
+    /// nothing about whether an account exists, the same silence a bad /start code gets.
+    /// </summary>
+    private async Task HandleBriefingAsync(string chatId, CancellationToken cancellationToken)
+    {
+        var owner = await _userReadRepository.GetByTelegramChatIdAsync(chatId, cancellationToken);
+        if (owner is null)
+        {
+            await ReplyAsync(chatId, UnknownCommandMessage, cancellationToken);
+            return;
+        }
+
+        // The dispatcher sends to the user's own chat, which is this one. Asking does not consume
+        // the day, so the automatic briefing still arrives at its hour.
+        var result = await _briefingDispatcher.SendAsync(owner, DateTime.UtcNow, answerWhenEmpty: true, cancellationToken);
+        if (result != BriefingDispatchResult.Sent)
+        {
+            _logger.LogWarning(
+                "A /briefing asked for by user {UserId} ended as {Result}", owner.Id.Value, result);
+            await ReplyAsync(chatId, BriefingFailedMessage, cancellationToken);
+        }
     }
 
     // ---- Button presses (tasks 6.3 and 6.4) ----

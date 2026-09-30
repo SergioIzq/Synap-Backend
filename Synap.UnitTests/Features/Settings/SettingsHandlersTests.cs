@@ -210,6 +210,55 @@ public class SettingsHandlersTests
         Assert.Empty(_ai.ListModelsKeys);
     }
 
+    // ---- SetBriefing (daily-briefing task 1.3) ----
+
+    private SetBriefingCommandHandler BriefingHandler() => new(_users, _unitOfWork, _context);
+
+    [Fact]
+    public async Task SetBriefing_turns_it_on_at_the_chosen_hour()
+    {
+        var result = await BriefingHandler().Handle(new SetBriefingCommand(Enabled: true, Hour: 7), default);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal((true, 7), (result.Value.Enabled, result.Value.Hour));
+        Assert.Equal((true, 7), (_user.BriefingEnabled, _user.BriefingHour));
+    }
+
+    [Fact]
+    public async Task SetBriefing_refuses_an_hour_outside_the_day_and_changes_nothing()
+    {
+        var result = await BriefingHandler().Handle(new SetBriefingCommand(Enabled: true, Hour: 25), default);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(SettingsErrors.BriefingHourInvalid, result.Error);
+        Assert.False(_user.BriefingEnabled);
+        Assert.Null(_user.BriefingHour);
+    }
+
+    [Fact]
+    public async Task SetBriefing_reports_whether_it_can_be_delivered()
+    {
+        Assert.False((await BriefingHandler().Handle(new SetBriefingCommand(true, 9), default)).Value.CanBeDelivered);
+
+        _user.CompleteTelegramLink("123456");
+
+        Assert.True((await BriefingHandler().Handle(new SetBriefingCommand(true, 9), default)).Value.CanBeDelivered);
+    }
+
+    /// <summary>specs/briefing "One user's setting is not another's".</summary>
+    [Fact]
+    public async Task SetBriefing_touches_only_the_requesting_user()
+    {
+        var other = UserGroqSettingsTests.NewUser();
+        _users.Add(other);
+
+        await BriefingHandler().Handle(new SetBriefingCommand(Enabled: true, Hour: 9), default);
+
+        Assert.True(_user.BriefingEnabled);
+        Assert.False(other.BriefingEnabled);
+        Assert.Null(other.BriefingHour);
+    }
+
     // ---- AskAssistant ----
 
     private AskAssistantQueryHandler AskHandler()

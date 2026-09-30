@@ -63,6 +63,13 @@ public sealed class User : AbsEntity<UserId>
 
     public bool HasTelegram => TelegramChatId is not null;
 
+    // The morning briefing (daily-briefing design.md Decision 3). Off until asked for, so a null
+    // hour is the same as off; the date is the last local day a briefing was *resolved* for this
+    // user - sent, or found to have nothing to report - which is what stops a second one that day.
+    public bool BriefingEnabled { get; private set; }
+    public int? BriefingHour { get; private set; }
+    public DateOnly? BriefingLastResolvedOn { get; private set; }
+
     public static User Create(Email email, PasswordHash passwordHash)
         => new(UserId.Create(Guid.NewGuid()).Value, email, passwordHash);
 
@@ -159,6 +166,55 @@ public sealed class User : AbsEntity<UserId>
 
         Timezone = trimmed;
         return true;
+    }
+
+    /// <summary>
+    /// Turns the morning briefing on at a local hour of the user's day, or off. An hour outside
+    /// 0-23 is refused rather than clamped: it can only come from a caller that got it wrong, and
+    /// a silently moved hour is a briefing that arrives when the user did not ask for it.
+    /// Turning it off keeps the hour, so turning it back on does not lose the choice.
+    /// </summary>
+    public bool SetBriefing(bool enabled, int? hour)
+    {
+        if (!enabled)
+        {
+            BriefingEnabled = false;
+            return true;
+        }
+
+        var chosen = hour ?? BriefingHour;
+        if (chosen is not { } value || value < 0 || value > 23)
+        {
+            return false;
+        }
+
+        BriefingEnabled = true;
+        BriefingHour = value;
+        return true;
+    }
+
+    /// <summary>
+    /// Records that this user's briefing is settled for that local day, whether a message went out
+    /// or there was nothing to report (specs/briefing "Nothing to report means nothing is sent").
+    /// A day that fails to deliver is deliberately not passed here: it stays unresolved so the
+    /// next sweep tries again while the day lasts.
+    /// </summary>
+    public void MarkBriefingResolved(DateOnly localDay) => BriefingLastResolvedOn = localDay;
+
+    /// <summary>
+    /// Whether a briefing is owed at this instant: turned on, the chosen hour reached in the
+    /// user's own day, and that day not settled yet. A day already past is never caught up
+    /// ("The day is over") because the comparison is against today's local date, not a backlog.
+    /// </summary>
+    public bool IsBriefingDue(DateTime nowUtc)
+    {
+        if (!BriefingEnabled || BriefingHour is not { } hour)
+        {
+            return false;
+        }
+
+        var local = UserClock.ToLocal(nowUtc, Timezone);
+        return local.Hour >= hour && BriefingLastResolvedOn != DateOnly.FromDateTime(local);
     }
 
     /// <summary>Replaces any previous code - only the most recently issued one works.</summary>

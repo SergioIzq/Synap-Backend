@@ -22,4 +22,4 @@ public sealed record AiSettingsResponse(
         defaultGroqModel);
 }
 
-public sealed record SettingsResponse(string Email, AiSettingsResponse Ai);
+public sealed record SettingsResponse(string Email, AiSettingsResponse Ai, BriefingSettingsResponse Briefing);

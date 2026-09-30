@@ -31,7 +31,6 @@ public sealed class AssistantAgent
     public const int ReadNoteMaxChars = 12_000;
 
     public const int MaxSources = 8;
-    private const int SourcePreviewChars = 60;
 
     // Tool results are read by the model: accents and "ñ" as they are, not \u escapes.
     private static readonly JsonSerializerOptions ToolResultJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
@@ -395,16 +394,7 @@ public sealed class AssistantAgent
             : [];
 
     /// <summary>A note's title, or a short preview of its text when it has none (like answer sources).</summary>
-    internal static string NoteLabel(string? title, string text)
-    {
-        if (!string.IsNullOrWhiteSpace(title))
-        {
-            return title.Trim();
-        }
-
-        var flat = string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        return flat.Length <= SourcePreviewChars ? flat : flat[..SourcePreviewChars].TrimEnd() + "…";
-    }
+    internal static string NoteLabel(string? title, string text) => NoteDisplay.Label(title, text);
 
     /// <summary>What one question has gathered so far.</summary>
     private sealed class Run(Guid userId, string? timezone)

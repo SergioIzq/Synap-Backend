@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Synap.Application.Features.Reminders;
+using Synap.Api.Telegram;
 using Synap.Application.Features.Reminders.Commands;
 using System.Text.Json;
 
@@ -26,11 +27,19 @@ public class TelegramController : ControllerBase
 
     private readonly ISender _sender;
     private readonly TelegramSettings _settings;
+    private readonly WebhookRejectionRecorder _rejections;
+    private readonly ILogger<TelegramController> _logger;
 
-    public TelegramController(ISender sender, IOptions<TelegramSettings> settings)
+    public TelegramController(
+        ISender sender,
+        IOptions<TelegramSettings> settings,
+        WebhookRejectionRecorder rejections,
+        ILogger<TelegramController> logger)
     {
         _sender = sender;
         _settings = settings.Value;
+        _rejections = rejections;
+        _logger = logger;
     }
 
     [HttpPost("webhook")]
@@ -54,16 +63,35 @@ public class TelegramController : ControllerBase
     /// <summary>
     /// A configured secret must match exactly. With delivery turned off the endpoint accepts
     /// nothing at all: there is no bot, so any call is noise.
+    ///
+    /// The reason is recorded, the answer is not: the caller still gets a bare 401 that reveals
+    /// nothing about the configuration, while whoever operates Synap can tell "delivery is off"
+    /// from "the secret does not match" - two identical silences that cost an afternoon.
     /// </summary>
     private bool IsFromTelegram()
     {
         if (!_settings.Enabled || string.IsNullOrWhiteSpace(_settings.WebhookSecret))
         {
+            Record("delivery-off", "A Telegram webhook call was rejected: delivery is turned off or no webhook secret is configured");
             return false;
         }
 
-        return Request.Headers.TryGetValue(SecretHeader, out var sent)
-            && CryptographicEquals(sent.ToString(), _settings.WebhookSecret);
+        if (Request.Headers.TryGetValue(SecretHeader, out var sent)
+            && CryptographicEquals(sent.ToString(), _settings.WebhookSecret))
+        {
+            return true;
+        }
+
+        Record("secret-mismatch", "A Telegram webhook call was rejected: the secret it carried does not match the configured one");
+        return false;
+    }
+
+    private void Record(string reason, string message)
+    {
+        if (_rejections.ShouldRecord(reason, DateTime.UtcNow))
+        {
+            _logger.LogWarning("{Message}", message);
+        }
     }
 
     private static bool CryptographicEquals(string sent, string expected)

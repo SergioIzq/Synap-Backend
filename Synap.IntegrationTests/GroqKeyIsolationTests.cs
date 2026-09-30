@@ -127,7 +127,7 @@ public class GroqKeyIsolationTests
             _protector,
             new NoteWriteRepository(context),
             new MemoryEntryReadRepository(context),
-            new AssistantAgent(ai, new UnusedSender(), new NoteReadRepository(new TestDbConnectionFactory(_fixture.ConnectionString))));
+            new AssistantAgent(ai, new UnusedSender(), new NoteReadRepository(new TestDbConnectionFactory(_fixture.ConnectionString)), Microsoft.Extensions.Logging.Abstractions.NullLogger<AssistantAgent>.Instance));
 
     private sealed class UnusedSender : MediatR.ISender
     {

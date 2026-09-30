@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Synap.Api.Telegram;
 using Synap.Shared.Application.Interfaces;
 using Npgsql;
 using System.Net;
@@ -54,6 +55,9 @@ public sealed class ApiFixture : IAsyncLifetime
     /// <summary>The webhook secret the test host is configured with (assistant-reminders).</summary>
     public const string TelegramWebhookSecret = "test-webhook-secret";
 
+    /// <summary>Everything the API logged, so tests can assert on records the response hides.</summary>
+    public RecordingLogSink Logs { get; } = new();
+
     public async Task InitializeAsync()
     {
         await _container.StartAsync();
@@ -79,11 +83,24 @@ public sealed class ApiFixture : IAsyncLifetime
                 services.AddSingleton<IAiServiceClient>(Ai);
                 services.RemoveAll<ITelegramSender>();
                 services.AddSingleton<ITelegramSender>(Telegram);
+                // No suppression window: the host is shared by the whole run, so a rejection
+                // recorded by one test would hide the next one's.
+                services.RemoveAll<WebhookRejectionRecorder>();
+                services.AddSingleton(new WebhookRejectionRecorder(TimeSpan.Zero));
+
             });
         });
 
         // Forces host start-up (and with it Program's Database.Migrate()).
         _factory.CreateClient().Dispose();
+
+        // Only now: Program replaces Log.Logger while starting. Wrapping it the way Program wraps
+        // the kernel's own logger keeps everything it writes and adds the capture for assertions.
+        Serilog.Log.Logger = new Serilog.LoggerConfiguration()
+            .MinimumLevel.Information()
+            .WriteTo.Logger(Serilog.Log.Logger)
+            .WriteTo.Sink(Logs)
+            .CreateLogger();
     }
 
     private int _nextClientIp;

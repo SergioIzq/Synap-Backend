@@ -1,4 +1,5 @@
 using MediatR;
+using Microsoft.Extensions.Logging;
 using Synap.Application.Features.Memory.Commands;
 using Synap.Application.Features.Reminders;
 using Synap.Application.Features.Reminders.Commands;
@@ -40,12 +41,18 @@ public sealed class AssistantAgent
     private readonly IAiServiceClient _aiServiceClient;
     private readonly ISender _sender;
     private readonly INoteReadRepository _noteReadRepository;
+    private readonly ILogger<AssistantAgent> _logger;
 
-    public AssistantAgent(IAiServiceClient aiServiceClient, ISender sender, INoteReadRepository noteReadRepository)
+    public AssistantAgent(
+        IAiServiceClient aiServiceClient,
+        ISender sender,
+        INoteReadRepository noteReadRepository,
+        ILogger<AssistantAgent> logger)
     {
         _aiServiceClient = aiServiceClient;
         _sender = sender;
         _noteReadRepository = noteReadRepository;
+        _logger = logger;
     }
 
     public async Task<AgentOutcome> RunAsync(
@@ -92,7 +99,16 @@ public sealed class AssistantAgent
             {
                 // Tool calls on the last step are ignored: no more requests are allowed.
                 var text = result.ToolCalls.Count == 0 ? result.Text?.Trim() : null;
-                return run.Answer(string.IsNullOrEmpty(text) ? OutOfStepsText(run) : text, step);
+                if (string.IsNullOrEmpty(text))
+                {
+                    return run.Answer(OutOfStepsText(run), step);
+                }
+
+                // Prose with nothing performed is the shape of the false claim: check it before
+                // it reaches the user (design.md Decision 4).
+                return run.Actions.Count == 0 && step < MaxSteps
+                    ? await GuardClaimAsync(run, messages, text, step, groqApiKey, groqModel, cancellationToken)
+                    : run.Answer(text, step);
             }
 
             messages.Add(AgentMessage.Assistant(result.Text, result.ToolCalls));
@@ -104,6 +120,65 @@ public sealed class AssistantAgent
         }
 
         return run.Answer(OutOfStepsText(run), MaxSteps);
+    }
+
+    /// <summary>
+    /// The answer claims nothing was done, or it is not delivered (specs/ai-assistant "An answer
+    /// never claims an action it did not perform"). Classify, offer the tools once more so the
+    /// claim can be made true, and replace it when it still is not. Both requests come out of the
+    /// same <see cref="MaxSteps"/> budget, so a question never costs more than it does today.
+    /// </summary>
+    private async Task<AgentOutcome> GuardClaimAsync(
+        Run run,
+        List<AgentMessage> messages,
+        string text,
+        int step,
+        string groqApiKey,
+        string? groqModel,
+        CancellationToken cancellationToken)
+    {
+        var classification = await _aiServiceClient.StepAsync(
+            [AgentMessage.System(AgentClaimGuard.ClassifierInstructions), AgentMessage.User(AgentClaimGuard.ClassifierQuestion(text))],
+            tools: null, groqApiKey, groqModel, cancellationToken);
+        var steps = step + 1;
+
+        // A classification that did not happen decides nothing: the answer goes out as it is.
+        if (classification.Status != AgentStepStatus.Ok || !AgentClaimGuard.ClaimsAnAction(classification.Text))
+        {
+            return run.Answer(text, steps);
+        }
+
+        if (steps < MaxSteps)
+        {
+            messages.Add(AgentMessage.Assistant(text));
+            messages.Add(AgentMessage.User(AgentClaimGuard.RetryInstruction));
+
+            var retry = await _aiServiceClient.StepAsync(messages, AgentTools.All, groqApiKey, groqModel, cancellationToken);
+            steps++;
+            if (retry.Status == AgentStepStatus.Ok && retry.ToolCalls.Count > 0)
+            {
+                messages.Add(AgentMessage.Assistant(retry.Text, retry.ToolCalls));
+                foreach (var call in retry.ToolCalls)
+                {
+                    var output = await ExecuteAsync(run, call, cancellationToken);
+                    messages.Add(AgentMessage.ToolResult(call.Id, output.ToJsonString(ToolResultJson)));
+                }
+
+                // The claim is now true: it is the user's answer, and the action is reported with it.
+                if (run.Actions.Count > 0)
+                {
+                    return run.Answer(text, steps);
+                }
+            }
+        }
+
+        // Observable on purpose: a guard nobody can see firing is the failure this change exists
+        // to stop (design.md - Migration Plan).
+        _logger.LogWarning(
+            "Assistant answer claimed an action that was not performed; the claim was replaced. User {UserId}, {Steps} generation requests.",
+            run.UserId, steps);
+
+        return run.Answer(AgentClaimGuard.CouldNotDoItMessage, steps);
     }
 
     private static string OutOfStepsText(Run run)
@@ -268,15 +343,14 @@ public sealed class AssistantAgent
 
     private async Task<JsonObject> SetReminderAsync(Run run, JsonElement args, CancellationToken cancellationToken)
     {
-        // The model is told to send ISO 8601 UTC; anything else is its mistake to correct, not a
-        // moment to guess at.
-        if (!DateTime.TryParse(
-                GetString(args, "due_at"),
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
-                out var dueAt))
+        // The moment arrives as the user said it and is resolved here, against their timezone
+        // (specs/ai-assistant "Reminder moments resolved in the user's timezone"). Wording that
+        // names no moment creates nothing: the model is told to ask, never to invent one
+        // ("Moment that cannot be resolved").
+        var wording = GetString(args, "when");
+        if (ReminderWording.Resolve(wording, DateTime.UtcNow, run.Timezone) is not { } dueAt)
         {
-            return Error("El momento del recordatorio tiene que ser una fecha ISO 8601 en UTC.");
+            return Error("No he entendido para cuándo. Pregunta al usuario qué día y a qué hora quiere el aviso.");
         }
 
         Guid? noteId = Guid.TryParse(GetString(args, "note_id"), out var parsedNoteId) ? parsedNoteId : null;

@@ -96,6 +96,28 @@ public class TelegramWebhookApiTests
     public async Task A_call_with_the_wrong_secret_is_rejected()
         => Assert.Equal(HttpStatusCode.Unauthorized, (await SendUpdateAsync(new { }, secret: "not-the-secret")).StatusCode);
 
+    /// <summary>
+    /// specs/reminders "A rejected webhook call is recorded": the caller still learns nothing -
+    /// same bare 401 - while whoever operates Synap can tell a mismatched secret from delivery
+    /// being switched off. The two used to be the same silence, which is what made a bot that
+    /// answered nothing impossible to diagnose.
+    /// </summary>
+    [Fact]
+    public async Task A_rejection_says_why_in_the_log_while_the_response_still_says_nothing()
+    {
+        var response = await SendUpdateAsync(new { }, secret: "also-not-the-secret");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+        // The body is the pipeline's usual problem+json and says nothing about why: a caller
+        // cannot tell a wrong secret from delivery being off, which is the point.
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("secret", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("delivery", body, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(_api.Logs.Recorded("the secret it carried does not match"));
+    }
+
     [Fact]
     public async Task An_update_with_the_right_secret_is_accepted_even_when_there_is_nothing_to_do()
     {

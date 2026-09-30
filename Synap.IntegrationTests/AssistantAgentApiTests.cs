@@ -1,3 +1,4 @@
+using Synap.Application.Features.Assistant.Agent;
 using Dapper;
 using Synap.Domain;
 using System.Net.Http.Json;
@@ -82,7 +83,7 @@ public class AssistantAgentApiTests
         var (client, key, _) = await UserWithKeyAsync();
         var moment = DateTime.UtcNow.AddDays(3).AddMinutes(-DateTime.UtcNow.Second);
         _api.Ai.ScriptSteps(key,
-            Calls(("set_reminder", new { text = "Renovar el certificado SSL", due_at = moment.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'") })),
+            Calls(("set_reminder", new { text = "Renovar el certificado SSL", when = moment.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'") })),
             Text("Te lo recuerdo el viernes a las 9:00."));
 
         var answer = await AskAsync(client, "recuérdame el viernes que tengo que renovar el certificado SSL", timezone: "Europe/Madrid");
@@ -106,7 +107,7 @@ public class AssistantAgentApiTests
             Calls(("set_reminder", new
             {
                 text = "Revisar las copias de seguridad",
-                due_at = DateTime.UtcNow.AddDays(1).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+                when = DateTime.UtcNow.AddDays(1).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
                 recurrence = "weekly:0",
             })),
             Text("Todos los lunes."));
@@ -122,7 +123,7 @@ public class AssistantAgentApiTests
     {
         var (client, key, _) = await UserWithKeyAsync();
         _api.Ai.ScriptSteps(key,
-            Calls(("set_reminder", new { text = "Tarde", due_at = DateTime.UtcNow.AddDays(-1).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'") })),
+            Calls(("set_reminder", new { text = "Tarde", when = DateTime.UtcNow.AddDays(-1).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'") })),
             Text("Ese momento ya ha pasado."));
 
         var answer = await AskAsync(client, "recuérdame ayer", timezone: "Europe/Madrid");
@@ -217,9 +218,13 @@ public class AssistantAgentApiTests
         await AskAsync(client, "hola");
         await AskAsync(client, "otra, respondida sin acciones"); // no steps left: the model "can't" use tools
 
-        var system = _api.Ai.StepRequests.Where(r => r.Key == key).Select(r => r.Messages[0].Content!).ToList();
+        // The claim guard's classification is a request of its own, and carries no memory at all:
+        // it judges one message (observable-failures design.md Decision 4).
+        var all = _api.Ai.StepRequests.Where(r => r.Key == key).Select(r => r.Messages[0].Content!).ToList();
+        Assert.DoesNotContain(all, s => s.Contains("memoria-privada-de-A"));
+        var system = all.Where(s => s != AgentClaimGuard.ClassifierInstructions).ToList();
+        Assert.NotEmpty(system);
         Assert.All(system, s => Assert.Contains("- uso Ubuntu", s));
-        Assert.DoesNotContain(system, s => s.Contains("memoria-privada-de-A"));
         var memory = Assert.Single(_api.Ai.Asks, a => a.Key == key).Memory;
         Assert.Equal(["uso Ubuntu"], memory!);
     }
@@ -232,7 +237,11 @@ public class AssistantAgentApiTests
 
         await AskAsync(client, "¿y cómo lo reinicio?", [new { question = "¿cómo configuré nginx?", answer = "Como proxy inverso." }]);
 
-        var messages = Assert.Single(_api.Ai.StepRequests, r => r.Key == key).Messages;
+        // One of the requests for this key is the claim guard's classification, which sees only the
+        // answer's text; the conversation is in the other (observable-failures design.md Decision 4).
+        var messages = Assert.Single(
+            _api.Ai.StepRequests,
+            r => r.Key == key && r.Messages[0].Content != AgentClaimGuard.ClassifierInstructions).Messages;
         Assert.Equal(["system", "user", "assistant", "user"], messages.Select(m => m.Role));
         Assert.Equal("¿cómo configuré nginx?", messages[1].Content);
     }

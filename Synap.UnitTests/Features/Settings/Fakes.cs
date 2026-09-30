@@ -186,3 +186,21 @@ internal sealed class FakeNoteRepository : INoteWriteRepository
 
     public void Delete(Note entity) => _notes.Remove(entity);
 }
+
+/// <summary>Keeps the formatted text of every record, so a test can assert what was logged.</summary>
+internal sealed class RecordingLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
+{
+    public List<string> Records { get; } = [];
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        Microsoft.Extensions.Logging.LogLevel logLevel,
+        Microsoft.Extensions.Logging.EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+        => Records.Add(formatter(state, exception));
+}

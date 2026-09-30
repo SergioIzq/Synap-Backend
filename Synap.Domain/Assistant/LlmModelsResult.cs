@@ -17,5 +17,15 @@ public enum LlmKeyStatus
     Ok,
     InvalidKey,
     RateLimited,
+
+    /// <summary>Groq itself could not be reached or used - the provider, not Synap.</summary>
     Unavailable,
+
+    /// <summary>
+    /// Synap's own AI service could not be reached, or refused the call, so Groq was never
+    /// contacted. Kept apart from <see cref="Unavailable"/> because blaming the provider for a
+    /// failure between Synap's own containers sends whoever reads it looking in the wrong place
+    /// (specs/user-settings "AI service unreachable during validation").
+    /// </summary>
+    ServiceUnavailable,
 }

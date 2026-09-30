@@ -61,13 +61,16 @@ internal static class AgentTools
               "text": {"type": "string", "maxLength": 200, "description": "The fact, short, in the user's words."}
             }}
             """),
+        // "when" takes the user's own words instead of a computed instant: resolving the moment
+        // was the only arithmetic any tool asked of the model, and the only tool it would not
+        // call (observable-failures design.md Decision 5). Synap resolves it - see ReminderWording.
         Tool(SetReminder,
-            "Warn the user about something at a given moment, through Telegram. Only when they ask to be reminded "
+            "Remind the user about something at a given moment, through Telegram. Only when they ask to be reminded "
             + "or warned about something - never on your own initiative.",
             """
-            {"type": "object", "additionalProperties": false, "required": ["text", "due_at"], "properties": {
+            {"type": "object", "additionalProperties": false, "required": ["text", "when"], "properties": {
               "text": {"type": "string", "maxLength": 500, "description": "What to remind them of, short, in their own words."},
-              "due_at": {"type": "string", "description": "When, as ISO 8601 in UTC (e.g. 2026-10-03T07:00:00Z). Resolve relative wording against the current moment and timezone given to you."},
+              "when": {"type": "string", "description": "When, in the user's own words and nothing else: \"hoy a las 20:20\", \"el viernes\", \"mañana a las 8\", \"en dos semanas\". Do not work out a date, an hour or a timezone - copy what they said."},
               "note_id": {"type": "string", "description": "A note of theirs the reminder is about, by the id a search returned. Only when the reminder really is about that note."},
               "recurrence": {"type": "string", "description": "For a repeating reminder: \"daily\", \"weekly:<0-6>\" (0 = Monday) or \"monthly:<1-28>\". Leave out for a one-off."}
             }}

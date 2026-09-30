@@ -90,6 +90,9 @@ public static class DependencyInjection
         // Reminder delivery (assistant-reminders design.md Decision 1): the service is scoped
         // (it uses the DbContext); the poller resolves one per tick in its own scope.
         services.AddScoped<ReminderDeliveryService>();
+        // Singleton: the delivery service is built per tick, and what it remembers - which
+        // reminders it has already reported as undeliverable - has to outlive the tick.
+        services.AddSingleton<WithheldReminderRecorder>();
         services.AddHostedService<ReminderPollerHostedService>();
 
         services.AddHttpClient<ITelegramSender, TelegramSender>(client =>

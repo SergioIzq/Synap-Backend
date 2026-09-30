@@ -25,6 +25,7 @@ public sealed class ReminderDeliveryService
     private readonly ITelegramSender _telegramSender;
     private readonly IUnitOfWork _unitOfWork;
     private readonly AppOptions _appOptions;
+    private readonly WithheldReminderRecorder _withheld;
     private readonly ILogger<ReminderDeliveryService> _logger;
 
     public ReminderDeliveryService(
@@ -32,12 +33,14 @@ public sealed class ReminderDeliveryService
         ITelegramSender telegramSender,
         IUnitOfWork unitOfWork,
         IOptions<AppOptions> appOptions,
+        WithheldReminderRecorder withheld,
         ILogger<ReminderDeliveryService> logger)
     {
         _reminderWriteRepository = reminderWriteRepository;
         _telegramSender = telegramSender;
         _unitOfWork = unitOfWork;
         _appOptions = appOptions.Value;
+        _withheld = withheld;
         _logger = logger;
     }
 
@@ -72,7 +75,15 @@ public sealed class ReminderDeliveryService
             if (string.IsNullOrWhiteSpace(item.TelegramChatId))
             {
                 // No chat linked: it stays pending for whenever one is (specs/reminders "No chat
-                // linked"). Not logged per tick - it would repeat every minute forever.
+                // linked"). Said once per reminder rather than on every tick, which is why this
+                // used to say nothing at all.
+                if (_withheld.ShouldRecord(item.Reminder.Id.Value))
+                {
+                    _logger.LogWarning(
+                        "Reminder {ReminderId} of user {UserId} fell due and was withheld: the user has no linked Telegram chat",
+                        item.Reminder.Id.Value, item.Reminder.UserId.Value);
+                }
+
                 continue;
             }
 
@@ -87,6 +98,7 @@ public sealed class ReminderDeliveryService
             if (await _telegramSender.SendAsync(message, cancellationToken))
             {
                 item.Reminder.MarkSent(nowUtc);
+                _withheld.Forget(item.Reminder.Id.Value);
                 delivered++;
             }
             else

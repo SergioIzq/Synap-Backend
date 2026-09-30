@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Synap.Application.Features.Reminders;
@@ -20,10 +21,33 @@ public class ReminderDeliveryServiceTests
     private readonly FakeTelegramSender _telegram = new();
     private readonly FakeUnitOfWork _unitOfWork = new();
 
+    private readonly WithheldReminderRecorder _withheld = new();
+    private readonly RecordingLogger<ReminderDeliveryService> _logger = new();
+
     private ReminderDeliveryService Service() => new(
         _reminders, _telegram, _unitOfWork,
         Options.Create(new AppOptions { PublicBaseUrl = "https://synap.sergioizq.com" }),
-        NullLogger<ReminderDeliveryService>.Instance);
+        _withheld,
+        _logger);
+
+    /// <summary>
+    /// specs/reminders "Due with no chat linked": said once, not on every sweep. Before this, a
+    /// reminder for a user without Telegram was skipped in complete silence - indistinguishable
+    /// from one that was never created.
+    /// </summary>
+    [Fact]
+    public async Task A_reminder_withheld_for_lack_of_a_chat_is_recorded_once_not_every_sweep()
+    {
+        Due("Renovar el certificado", chatId: null);
+
+        await Service().DeliverDueAsync(Now.AddMinutes(2));
+        await Service().DeliverDueAsync(Now.AddMinutes(3));
+
+        var withheld = _logger.Records.Where(r => r.Contains("withheld")).ToList();
+        Assert.Single(withheld);
+        Assert.Contains("no linked Telegram chat", withheld[0]);
+        Assert.Empty(_telegram.Sent);
+    }
 
     private Reminder Due(string text, string? chatId = ChatId, string? recurrence = null)
     {

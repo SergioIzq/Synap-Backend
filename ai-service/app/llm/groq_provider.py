@@ -43,16 +43,19 @@ def _scope_instructions(scope: AnswerScope) -> str:
     return f"{text} {HISTORY_INSTRUCTIONS}"
 
 
+# All four actions are named, reminders included: an action left out of these texts is one the
+# model has no instruction about, so it answers about it however it likes - which is how a model
+# without actions came to promise a reminder (observable-failures task 5.5).
 ACTIONS_UNAVAILABLE_INSTRUCTIONS: dict[str, str] = {
     "scope": (
-        "In this conversation you can't create notes, add tags or remember facts. If the user asks for that, "
-        "tell them to ask from the assistant's general conversation (without a note or tag selected), "
-        "and that memories can also be added in Settings > Memoria."
+        "In this conversation you can't create notes, add tags, remember facts or set reminders. If the user asks "
+        "for any of that, tell them to ask from the assistant's general conversation (without a note or tag "
+        "selected); memories can also be added in Settings > Memoria, and reminders in Recordatorios."
     ),
     "model": (
-        "With the model the user chose you can't create notes, add tags or remember facts. If the user asks for that, "
-        "tell them that the current model can't perform actions and that they can choose one that can in Settings; "
-        "memories can also be added in Settings > Memoria."
+        "With the model the user chose you can't create notes, add tags, remember facts or set reminders. If the "
+        "user asks for any of that, tell them that the current model can't perform actions and that they can choose "
+        "one that can in Settings; memories can also be added in Settings > Memoria, and reminders in Recordatorios."
     ),
 }
 
@@ -217,18 +220,31 @@ def _from_groq_tool_call(call: dict[str, Any]) -> ToolCall:
     return ToolCall(id=call["id"], name=function["name"], arguments=arguments)
 
 
+# A 400 that says the model cannot take tools at all. Merely mentioning "tool" is not enough:
+# a malformed schema, an unknown field or a call the model got wrong all mention tools too, and
+# reading any of them as "this model has no tool support" silently degrades the whole
+# conversation to a question-answer exchange - with the assistant never told it cannot act
+# (specs/ai-assistant "Refusal for another reason").
+_UNSUPPORTED_MARKERS = ("not supported", "unsupported", "does not support", "no support")
+
+
 def _raise_for_tool_error(response: httpx.Response) -> None:
     """A 400 caused by the tools themselves: the model can't take them, or it produced a call
-    Groq could not parse (`tool_use_failed`). Any other 400 is left to the generic mapping."""
+    Groq could not parse (`tool_use_failed`). Any other 400 is left to the generic mapping.
+
+    The provider's own words travel on the raised error: they are the only trace of why a
+    conversation lost its actions (specs/platform-operations "Classified failure keeps its
+    cause")."""
     try:
         error = response.json().get("error") or {}
     except ValueError:
         return
+    message = str(error.get("message", "")).strip()
     if error.get("code") == "tool_use_failed":
-        raise LlmToolCallFailedError("The model produced an invalid tool call")
-    message = str(error.get("message", "")).lower()
-    if "tool" in message:
-        raise LlmToolsUnsupportedError("The model does not support tools")
+        raise LlmToolCallFailedError(message or "The model produced an invalid tool call")
+    lowered = message.lower()
+    if "tool" in lowered and any(marker in lowered for marker in _UNSUPPORTED_MARKERS):
+        raise LlmToolsUnsupportedError(message)
 
 
 def _raise_for_provider_status(response: httpx.Response) -> None:

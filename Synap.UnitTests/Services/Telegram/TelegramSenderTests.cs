@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Synap.Application.Features.Reminders;
@@ -153,7 +154,70 @@ public class TelegramSenderTests
         Assert.Equal("Hecho ✓", payload.GetProperty("text").GetString());
     }
 
+    /// <summary>
+    /// specs/platform-operations "Failure before the request leaves": the bug that cost an
+    /// afternoon was recorded as Telegram being unreachable while no packet had ever been sent.
+    /// The classification, not the trigger, is what this pins down.
+    /// </summary>
+    [Fact]
+    public async Task A_request_that_could_not_be_built_is_recorded_as_never_sent()
+    {
+        var logger = new RecordingLogger<TelegramSender>();
+        // Without a base address the relative path never becomes a request URI, so the call fails
+        // before anything is sent - the same shape as a bot token whose colon parses as a scheme.
+        var sender = new TelegramSender(new HttpClient(new ThrowingHandler()), Options.Create(On()), logger);
+
+        Assert.False(await sender.SendAsync(Message));
+
+        var record = Assert.Single(logger.Records);
+        Assert.Contains("was never sent", record);
+        Assert.DoesNotContain("could not be reached", record);
+    }
+
+    [Fact]
+    public async Task A_transport_failure_is_recorded_as_unreachable_with_its_type()
+    {
+        var logger = new RecordingLogger<TelegramSender>();
+        var client = new HttpClient(new ThrowingHandler()) { BaseAddress = new Uri("https://api.telegram.org/") };
+        var sender = new TelegramSender(client, Options.Create(On()), logger);
+
+        Assert.False(await sender.SendAsync(Message));
+
+        var record = Assert.Single(logger.Records);
+        Assert.Contains("could not be reached", record);
+        Assert.Contains(nameof(HttpRequestException), record);
+    }
+
+    [Fact]
+    public async Task A_refusal_is_recorded_with_the_status_and_the_body_telegram_returned()
+    {
+        var logger = new RecordingLogger<TelegramSender>();
+        var handler = new RecordingHandler(HttpStatusCode.BadRequest, "{\"description\":\"chat not found\"}");
+        var client = new HttpClient(handler) { BaseAddress = new Uri("https://api.telegram.org/") };
+        var sender = new TelegramSender(client, Options.Create(On()), logger);
+
+        Assert.False(await sender.SendAsync(Message));
+
+        var record = Assert.Single(logger.Records);
+        Assert.Contains("was refused", record);
+        Assert.Contains("400", record);
+        Assert.Contains("chat not found", record);
+    }
+
     private sealed record SentRequest(string Path, string Body);
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<string> Records { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Records.Add(formatter(state, exception));
+    }
 
     private sealed class RecordingHandler(HttpStatusCode status, string body) : HttpMessageHandler
     {

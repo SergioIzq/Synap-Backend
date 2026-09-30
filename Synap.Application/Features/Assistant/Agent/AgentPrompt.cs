@@ -18,9 +18,10 @@ internal static class AgentPrompt
         + "Earlier messages of this conversation are included for follow-up questions.";
 
     /// <summary>
-    /// How the model turns "el viernes" into the UTC instant set_reminder takes
-    /// (assistant-reminders design.md Decision 6). The current moment has to be stated: the model
-    /// has no clock, and every relative date depends on it.
+    /// The current moment, which the model has no way of knowing, and the instruction to hand
+    /// set_reminder the user's own wording rather than an instant it worked out itself
+    /// (observable-failures design.md Decision 5). The clock is still stated because the model
+    /// needs it to answer about dates at all, not because it has to do the arithmetic.
     /// </summary>
     internal static string Clock(DateTime nowUtc, string? timezone)
     {
@@ -29,11 +30,12 @@ internal static class AgentPrompt
 
         return $"\n\nRight now it is {local:yyyy-MM-dd HH:mm} ({local:dddd}) in the user's timezone, {zone.Id}, "
             + $"which is {nowUtc:yyyy-MM-dd'T'HH:mm:ss'Z'} in UTC. "
-            + "Resolve any moment the user gives you against that, always picking the nearest one in the future: "
-            + "\"el viernes\" on a Saturday means next Friday, not the one just gone. "
-            + "When they name a day without a time, use 09:00 in their timezone. "
-            + "Reminder moments you pass to set_reminder are always ISO 8601 in UTC, "
-            + "and your answer states the date and time you settled on, in the user's timezone, so they can correct you.";
+            + "When the user asks to be reminded of something, pass set_reminder the moment in their own words, "
+            + "exactly as they said it - \"hoy a las 20:20\", \"el viernes\", \"en dos semanas\" - and do not turn it "
+            + "into a date, an hour or a timezone yourself: Synap resolves it. "
+            + "The tool answers with the moment it settled on, and your reply states that moment, so the user can correct you. "
+            + "When the tool says it could not understand the moment, ask them when they want to be reminded; "
+            + "never say you have set a reminder that was not set.";
     }
 
     /// <summary>Same wording and position as the AI service's memory block (after the instructions, before the history).</summary>

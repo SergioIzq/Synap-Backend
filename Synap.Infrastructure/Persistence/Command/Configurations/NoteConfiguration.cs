@@ -38,6 +38,16 @@ public sealed class NoteConfiguration : IEntityTypeConfiguration<Note>
 
         builder.Property(n => n.UpdatedAt).HasColumnName("updated_at").IsRequired();
 
+        // Stored by name like note_type, and nullable: null means the note is material rather
+        // than work, which is the default (note-status design.md Decision 1). No default value
+        // and no backfill - nothing can infer the status of a note that already exists.
+        builder.Property(n => n.Status)
+            .HasColumnName("status")
+            .HasConversion<string?>()
+            .HasMaxLength(20);
+
+        builder.Property(n => n.StatusChangedAt).HasColumnName("status_changed_at");
+
         builder.Property(n => n.FechaCreacion)
             .HasColumnName("created_at")
             .IsRequired()
@@ -54,6 +64,10 @@ public sealed class NoteConfiguration : IEntityTypeConfiguration<Note>
         });
 
         builder.HasIndex(n => new { n.UserId, n.FechaCreacion }).HasDatabaseName("idx_notes_user_created");
+
+        // The briefing's two status queries and the notes list's status filter both ask
+        // "this user's notes with status in (...)", so the filter is where the index goes.
+        builder.HasIndex(n => new { n.UserId, n.Status }).HasDatabaseName("idx_notes_user_status");
 
         builder.HasMany(n => n.Tags)
             .WithMany()

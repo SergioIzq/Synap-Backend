@@ -52,13 +52,34 @@ public class NoteTypeSerializationTests
     // What the kernel's result handler does: a plain (PascalCase) enum converter in the options.
     private static readonly JsonSerializerOptions KernelLike = new() { Converters = { new JsonStringEnumConverter() } };
 
+    /// <summary>note-status task 2.3 - the status has to reach the web app on the wire.</summary>
+    [Theory]
+    [InlineData(NoteStatus.Pending, "pending")]
+    [InlineData(NoteStatus.InProgress, "inProgress")]
+    [InlineData(NoteStatus.Paused, "paused")]
+    [InlineData(NoteStatus.Completed, "completed")]
+    public void A_notes_status_is_serialized_with_its_camelCase_wire_name(NoteStatus status, string expected)
+    {
+        var result = new NoteSearchResult(Guid.Empty, null, "c", NoteType.Text, default, default, status, [], null, null, null);
+
+        Assert.Contains($"\"status\":\"{expected}\"", JsonSerializer.Serialize(result, KernelLike), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_note_with_no_status_serializes_it_as_null()
+    {
+        var result = new NoteSearchResult(Guid.Empty, null, "c", NoteType.Text, default, default, null, [], null, null, null);
+
+        Assert.Contains("\"status\":null", JsonSerializer.Serialize(result, KernelLike), StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData(NoteType.Text, "text")]
     [InlineData(NoteType.CodeSnippet, "codeSnippet")]
     [InlineData(NoteType.Bookmark, "bookmark")]
     public void Response_shapes_use_camelCase_even_with_a_PascalCase_enum_converter(NoteType type, string expected)
     {
-        var result = new NoteSearchResult(Guid.Empty, null, "c", type, default, default, [], null, null, null);
+        var result = new NoteSearchResult(Guid.Empty, null, "c", type, default, default, null, [], null, null, null);
         var related = new RelatedNote(Guid.Empty, null, "c", type, 0.5);
 
         Assert.Contains($"\"type\":\"{expected}\"", JsonSerializer.Serialize(result, KernelLike), StringComparison.OrdinalIgnoreCase);

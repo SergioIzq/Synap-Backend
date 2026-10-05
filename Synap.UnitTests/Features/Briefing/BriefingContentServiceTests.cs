@@ -73,21 +73,68 @@ public class BriefingContentServiceTests
     // ---- Assembling ----
 
     [Fact]
-    public async Task The_three_sections_are_reported_as_the_queries_returned_them()
+    public async Task The_four_sections_are_reported_as_the_queries_returned_them()
     {
         _repository.Reminders = new BriefingSection<BriefingReminder>(
             [new BriefingReminder(Guid.NewGuid(), "Llamar al banco", DateTime.UtcNow, null)], 1);
         _repository.Untagged = new BriefingSection<BriefingNote>(
             [new BriefingNote(Guid.NewGuid(), "Sin etiquetar", "algo")], 4);
-        _repository.OpenThreads = new BriefingSection<BriefingNote>([], 0);
+        _repository.InProgress = new BriefingSection<BriefingNote>(
+            [new BriefingNote(Guid.NewGuid(), "Migrar auth", "algo")], 1);
+        _repository.Pending = new BriefingSection<BriefingNote>([], 0);
 
         var content = await Service().BuildAsync(Me, DateTime.UtcNow, Madrid);
 
         Assert.Equal("Llamar al banco", Assert.Single(content.RemindersToday.Items).Text);
         Assert.True(content.UntaggedNotes.IsTruncated);
         Assert.Equal(4, content.UntaggedNotes.Total);
-        Assert.True(content.OpenThreads.IsEmpty);
+        Assert.Equal("Migrar auth", Assert.Single(content.InProgress.Items).Title);
+        Assert.True(content.Pending.IsEmpty);
         Assert.False(content.IsEmpty);
+    }
+
+    /// <summary>
+    /// note-status task 6.4 - the day this ships, nobody has marked anything, and the briefing has
+    /// to behave rather than break (design.md Migration Plan / Risks).
+    /// </summary>
+    [Fact]
+    public async Task A_user_who_has_marked_nothing_gets_neither_status_section()
+    {
+        _repository.Untagged = new BriefingSection<BriefingNote>(
+            [new BriefingNote(Guid.NewGuid(), "Sin etiquetar", "algo")], 1);
+
+        var content = await Service().BuildAsync(Me, DateTime.UtcNow, Madrid);
+
+        Assert.True(content.InProgress.IsEmpty);
+        Assert.True(content.Pending.IsEmpty);
+        Assert.False(content.IsEmpty);
+    }
+
+    /// <summary>
+    /// A pending-only day is still a day with something to report: IsEmpty has to count the new
+    /// sections, or the automatic briefing would stay silent on it.
+    /// </summary>
+    [Fact]
+    public async Task A_day_with_only_pending_notes_is_not_empty()
+    {
+        _repository.Pending = new BriefingSection<BriefingNote>(
+            [new BriefingNote(Guid.NewGuid(), "Migrar auth", "algo")], 1);
+
+        var content = await Service().BuildAsync(Me, DateTime.UtcNow, Madrid);
+
+        Assert.False(content.IsEmpty);
+    }
+
+    /// <summary>design.md Decision 6 - the cutoff the service hands the query.</summary>
+    [Fact]
+    public async Task The_paused_cutoff_is_the_resurface_window_before_now()
+    {
+        var nowUtc = new DateTime(2026, 10, 1, 8, 0, 0, DateTimeKind.Utc);
+
+        await Service().BuildAsync(Me, nowUtc, Madrid);
+
+        Assert.Equal(nowUtc - BriefingLimits.PausedResurfaceAfter, _repository.PausedBefore);
+        Assert.Equal(nowUtc, _repository.PendingNowUtc);
     }
 
     [Fact]
@@ -104,7 +151,7 @@ public class BriefingContentServiceTests
     {
         await Service().BuildAsync(Me, DateTime.UtcNow, Madrid);
 
-        Assert.Equal([Me, Me, Me], _repository.UserIds);
+        Assert.Equal([Me, Me, Me, Me], _repository.UserIds);
     }
 
     [Fact]
@@ -113,7 +160,8 @@ public class BriefingContentServiceTests
         await Service().BuildAsync(Me, DateTime.UtcNow, Madrid);
 
         Assert.Equal(
-            [BriefingLimits.ItemsPerSection, BriefingLimits.ItemsPerSection, BriefingLimits.ItemsPerSection],
+            [BriefingLimits.ItemsPerSection, BriefingLimits.ItemsPerSection,
+             BriefingLimits.ItemsPerSection, BriefingLimits.ItemsPerSection],
             _repository.Limits);
     }
 
@@ -121,10 +169,13 @@ public class BriefingContentServiceTests
     {
         public BriefingSection<BriefingReminder> Reminders { get; set; } = BriefingSection<BriefingReminder>.Empty;
         public BriefingSection<BriefingNote> Untagged { get; set; } = BriefingSection<BriefingNote>.Empty;
-        public BriefingSection<BriefingNote> OpenThreads { get; set; } = BriefingSection<BriefingNote>.Empty;
+        public BriefingSection<BriefingNote> InProgress { get; set; } = BriefingSection<BriefingNote>.Empty;
+        public BriefingSection<BriefingNote> Pending { get; set; } = BriefingSection<BriefingNote>.Empty;
 
         public (DateTime FromUtc, DateTime ToUtc) ReminderWindow { get; private set; }
         public DateTime UntaggedSince { get; private set; }
+        public DateTime PausedBefore { get; private set; }
+        public DateTime PendingNowUtc { get; private set; }
         public List<Guid> UserIds { get; } = [];
         public List<int> Limits { get; } = [];
 
@@ -146,16 +197,22 @@ public class BriefingContentServiceTests
             return Task.FromResult(Untagged);
         }
 
-        public Task<BriefingSection<BriefingNote>> ListOpenThreadNotesAsync(
-            Guid userId,
-            IReadOnlyList<string> stemmedMarkers,
-            IReadOnlyList<string> literalMarkers,
-            int limit,
-            CancellationToken cancellationToken = default)
+        public Task<BriefingSection<BriefingNote>> ListInProgressNotesAsync(
+            Guid userId, int limit, CancellationToken cancellationToken = default)
         {
             UserIds.Add(userId);
             Limits.Add(limit);
-            return Task.FromResult(OpenThreads);
+            return Task.FromResult(InProgress);
+        }
+
+        public Task<BriefingSection<BriefingNote>> ListPendingNotesAsync(
+            Guid userId, DateTime pausedBeforeUtc, DateTime nowUtc, int limit, CancellationToken cancellationToken = default)
+        {
+            PausedBefore = pausedBeforeUtc;
+            PendingNowUtc = nowUtc;
+            UserIds.Add(userId);
+            Limits.Add(limit);
+            return Task.FromResult(Pending);
         }
     }
 }

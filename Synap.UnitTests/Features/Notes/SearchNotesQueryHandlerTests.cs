@@ -28,6 +28,9 @@ public class SearchNotesQueryHandlerTests
 
     private SearchNotesQueryHandler Handler() => new(_repository, new FakeUserContext(Guid.NewGuid()));
 
+    private static SearchNotesQuery Query(string? status)
+        => new(null, null, null, 1, NoteSearchCriteria.DefaultPageSize, status);
+
     [Theory]
     [InlineData(0, 20)]
     [InlineData(-1, 20)]
@@ -68,7 +71,100 @@ public class SearchNotesQueryHandlerTests
     {
         await Handler().Handle(new SearchNotesQuery("  ", " ", ""), default);
 
-        Assert.Equal(new NoteSearchCriteria(null, null, null, 1, NoteSearchCriteria.DefaultPageSize), _repository.LastCriteria);
+        Assert.Equal(
+            new NoteSearchCriteria(null, null, null, 1, NoteSearchCriteria.DefaultPageSize, NoteStatusFilter.Default),
+            _repository.LastCriteria);
+    }
+
+    /// <summary>
+    /// note-status task 3.3 - specs/knowledge-vault "Completed notes are left out by default":
+    /// no status named means everything live, unmarked notes included.
+    /// </summary>
+    [Fact]
+    public async Task No_status_named_means_the_default_filter()
+    {
+        var result = await Handler().Handle(new SearchNotesQuery(null, null), default);
+
+        Assert.True(result.IsSuccess);
+        var filter = _repository.LastCriteria!.StatusFilter;
+        Assert.True(filter.IncludeWithoutStatus);
+        Assert.Equal(
+            new HashSet<NoteStatus> { NoteStatus.Pending, NoteStatus.InProgress, NoteStatus.Paused },
+            filter.Statuses);
+    }
+
+    [Theory]
+    [InlineData("pending", NoteStatus.Pending)]
+    [InlineData("inProgress", NoteStatus.InProgress)]
+    [InlineData("PAUSED", NoteStatus.Paused)]
+    [InlineData("completed", NoteStatus.Completed)]
+    public async Task Parses_one_status(string wire, NoteStatus expected)
+    {
+        var result = await Handler().Handle(Query(wire), default);
+
+        Assert.True(result.IsSuccess);
+        var filter = _repository.LastCriteria!.StatusFilter;
+        Assert.Equal([expected], filter.Statuses);
+        Assert.False(filter.IncludeWithoutStatus);
+    }
+
+    /// <summary>specs/knowledge-vault "Filtered to several statuses at once".</summary>
+    [Fact]
+    public async Task Parses_several_statuses()
+    {
+        await Handler().Handle(Query("pending, inProgress"), default);
+
+        Assert.Equal(
+            new HashSet<NoteStatus> { NoteStatus.Pending, NoteStatus.InProgress },
+            _repository.LastCriteria!.StatusFilter.Statuses);
+    }
+
+    /// <summary>specs/knowledge-vault "Filtered to notes without a status".</summary>
+    [Fact]
+    public async Task Parses_none_on_its_own()
+    {
+        await Handler().Handle(Query("none"), default);
+
+        var filter = _repository.LastCriteria!.StatusFilter;
+        Assert.Empty(filter.Statuses);
+        Assert.True(filter.IncludeWithoutStatus);
+    }
+
+    /// <summary>specs/knowledge-vault "Statuses and \"no status\" filtered together".</summary>
+    [Fact]
+    public async Task Parses_a_status_mixed_with_none()
+    {
+        await Handler().Handle(Query("pending,none"), default);
+
+        var filter = _repository.LastCriteria!.StatusFilter;
+        Assert.Equal([NoteStatus.Pending], filter.Statuses);
+        Assert.True(filter.IncludeWithoutStatus);
+    }
+
+    /// <summary>specs/knowledge-vault "An unknown value in the status filter".</summary>
+    [Theory]
+    [InlineData("archived")]
+    [InlineData("1")]
+    [InlineData("pending,archived")]
+    [InlineData(",,")]
+    public async Task Rejects_unknown_statuses(string wire)
+    {
+        var result = await Handler().Handle(Query(wire), default);
+
+        Assert.Equal(SearchNotesQueryHandler.InvalidStatus.Message, result.Error.Message);
+        Assert.Null(_repository.LastCriteria);
+    }
+
+    /// <summary>The message names what is accepted, so a typo is a clear error, not an empty list.</summary>
+    [Fact]
+    public async Task The_rejection_names_the_accepted_values()
+    {
+        var result = await Handler().Handle(Query("archived"), default);
+
+        foreach (var accepted in NoteStatusFilter.AcceptedValues)
+        {
+            Assert.Contains(accepted, result.Error.Message);
+        }
     }
 
     [Fact]

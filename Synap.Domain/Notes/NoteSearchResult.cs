@@ -9,6 +9,7 @@ public sealed record NoteSearchResult(
     [property: System.Text.Json.Serialization.JsonConverter(typeof(NoteTypeJsonConverter))] NoteType Type,
     DateTime CreatedAt,
     DateTime UpdatedAt,
+    [property: System.Text.Json.Serialization.JsonConverter(typeof(NoteStatusJsonConverter))] NoteStatus? Status,
     IReadOnlyList<string> Tags,
     string? MetadataTitle,
     string? MetadataDescription,

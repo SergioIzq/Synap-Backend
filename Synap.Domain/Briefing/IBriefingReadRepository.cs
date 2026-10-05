@@ -1,7 +1,8 @@
 namespace Synap.Domain;
 
 /// <summary>
-/// The three questions a briefing asks the database (daily-briefing design.md Decision 4). Reads
+/// The four questions a briefing asks the database (daily-briefing design.md Decision 4, extended
+/// by note-status Decision 7, which replaced the text-marker question with two status ones). Reads
 /// only, and always scoped to one user: a briefing carries that user's own notes and reminders and
 /// nothing else (specs/briefing "A briefing never crosses users").
 ///
@@ -22,16 +23,16 @@ public interface IBriefingReadRepository
     Task<BriefingSection<BriefingNote>> ListUntaggedNotesAsync(
         Guid userId, DateTime sinceUtc, int limit, CancellationToken cancellationToken = default);
 
+    /// <summary>The user's notes marked as in progress, newest first.</summary>
+    Task<BriefingSection<BriefingNote>> ListInProgressNotesAsync(
+        Guid userId, int limit, CancellationToken cancellationToken = default);
+
     /// <summary>
-    /// The user's notes whose title or text carries one of the open-thread markers, newest first.
-    /// <paramref name="stemmedMarkers"/> go through the indexed search vector;
-    /// <paramref name="literalMarkers"/> are matched as substrings, for the ones Spanish text
-    /// search discards as stopwords.
+    /// The user's notes marked as pending, newest first, together with those that have stood
+    /// paused since before <paramref name="pausedBeforeUtc"/> - a note paused that long rejoins the
+    /// pending section carrying how many days it has been paused (specs/briefing "A long-paused
+    /// note resurfaces"). A recently paused note is absent, which is what pausing is for.
     /// </summary>
-    Task<BriefingSection<BriefingNote>> ListOpenThreadNotesAsync(
-        Guid userId,
-        IReadOnlyList<string> stemmedMarkers,
-        IReadOnlyList<string> literalMarkers,
-        int limit,
-        CancellationToken cancellationToken = default);
+    Task<BriefingSection<BriefingNote>> ListPendingNotesAsync(
+        Guid userId, DateTime pausedBeforeUtc, DateTime nowUtc, int limit, CancellationToken cancellationToken = default);
 }

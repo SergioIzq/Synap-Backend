@@ -7,8 +7,12 @@ public sealed record BriefingReminder(Guid Id, string Text, DateTime DueAt, stri
 /// A note the briefing points at. <see cref="Title"/> and <see cref="Content"/> are both carried
 /// so the message can identify a note with no title by a preview of its text, the way an answer's
 /// sources already do (specs/briefing "What a briefing contains").
+///
+/// <see cref="PausedForDays"/> is set only for a note that rejoined the pending section after
+/// standing paused too long, and is what lets the message say how long it has been paused
+/// (specs/briefing "A long-paused note resurfaces"). Null for every other note.
 /// </summary>
-public sealed record BriefingNote(Guid Id, string? Title, string Content);
+public sealed record BriefingNote(Guid Id, string? Title, string Content, int? PausedForDays = null);
 
 /// <summary>
 /// One section of the briefing: the items it shows, and how many there are in all. They differ
@@ -33,17 +37,19 @@ public sealed record BriefingSection<T>(IReadOnlyList<T> Items, int Total)
 /// </summary>
 public sealed record BriefingContent(
     BriefingSection<BriefingReminder> RemindersToday,
-    BriefingSection<BriefingNote> UntaggedNotes,
-    BriefingSection<BriefingNote> OpenThreads)
+    BriefingSection<BriefingNote> InProgress,
+    BriefingSection<BriefingNote> Pending,
+    BriefingSection<BriefingNote> UntaggedNotes)
 {
     public static BriefingContent Empty { get; } =
-        new(BriefingSection<BriefingReminder>.Empty, BriefingSection<BriefingNote>.Empty, BriefingSection<BriefingNote>.Empty);
+        new(BriefingSection<BriefingReminder>.Empty, BriefingSection<BriefingNote>.Empty,
+            BriefingSection<BriefingNote>.Empty, BriefingSection<BriefingNote>.Empty);
 
     /// <summary>
     /// Nothing to report. The automatic briefing stays silent on such a day and resolves it
     /// anyway; one the user asked for still answers, saying so (specs/briefing).
     /// </summary>
-    public bool IsEmpty => RemindersToday.IsEmpty && UntaggedNotes.IsEmpty && OpenThreads.IsEmpty;
+    public bool IsEmpty => RemindersToday.IsEmpty && InProgress.IsEmpty && Pending.IsEmpty && UntaggedNotes.IsEmpty;
 }
 
 /// <summary>
@@ -59,16 +65,13 @@ public static class BriefingLimits
     public const int ItemsPerSection = 5;
 
     /// <summary>
-    /// Markers the Spanish text search can stem and match through the indexed search_vector:
-    /// "pendiente" also catches "pendientes", "revisar" also catches "revisando".
+    /// How long a note may stand paused before it rejoins the pending section, saying how long it
+    /// has been paused (note-status design.md Decision 6). Pausing is meant to silence a note, but
+    /// a note silenced for ever is the invisibility the briefing exists to prevent
+    /// (specs/briefing - Purpose), so the silence has a bound.
+    ///
+    /// Here rather than in specs/briefing for the same reason <see cref="UntaggedWindow"/> is: it
+    /// decides how much the briefing shows, not what it promises.
     /// </summary>
-    public static readonly IReadOnlyList<string> StemmedMarkers = ["pendiente", "revisar"];
-
-    /// <summary>
-    /// Markers the search vector throws away because Spanish treats them as stopwords - "todo"
-    /// being the one a technical note is most likely to carry. Matched as substrings instead, and
-    /// <b>case sensitively</b>: in capitals it is the convention, in lower case it is the ordinary
-    /// Spanish word that appears in "todo salió bien".
-    /// </summary>
-    public static readonly IReadOnlyList<string> LiteralMarkers = ["TODO"];
+    public static readonly TimeSpan PausedResurfaceAfter = TimeSpan.FromDays(15);
 }

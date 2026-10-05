@@ -583,7 +583,7 @@ internal sealed class NotesView(FakeNoteRepository notes) : INoteReadRepository
         return Task.FromResult(note is null
             ? null
             : new NoteSearchResult(note.Id.Value, note.Title, note.Content, note.Type, note.FechaCreacion, note.UpdatedAt,
-                note.Tags.Select(t => t.Name).ToList(), null, null, null));
+                note.Status, note.Tags.Select(t => t.Name).ToList(), null, null, null));
     }
 
     public Task<PagedResult<NoteSearchResult>> SearchAsync(Guid userId, NoteSearchCriteria criteria, CancellationToken cancellationToken = default)

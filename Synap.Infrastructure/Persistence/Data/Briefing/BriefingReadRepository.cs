@@ -5,7 +5,8 @@ using Synap.Shared.Application.Interfaces;
 namespace Synap.Infrastructure.Persistence.Data.Briefing;
 
 /// <summary>
-/// The briefing's three queries (daily-briefing design.md Decision 4), Dapper like the other
+/// The briefing's four queries (daily-briefing design.md Decision 4, extended by note-status
+/// Decision 7), Dapper like the other
 /// reporting-style reads. Each one filters by user first and takes its total in the same round
 /// trip with COUNT(*) OVER(), so a capped section still knows how many it stands for.
 /// </summary>
@@ -54,7 +55,7 @@ public sealed class BriefingReadRepository : IBriefingReadRepository
         using var connection = _dbConnectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT n.id AS Id, n.title AS Title, n.content AS Content,
+            SELECT n.id AS Id, n.title AS Title, n.content AS Content, NULL::int AS PausedForDays,
                    COUNT(*) OVER() AS TotalCount
             FROM notes n
             WHERE n.user_id = @UserId
@@ -67,57 +68,68 @@ public sealed class BriefingReadRepository : IBriefingReadRepository
         return await NotesAsync(connection, sql, new { UserId = userId, SinceUtc = sinceUtc, Limit = limit }, cancellationToken);
     }
 
-    public async Task<BriefingSection<BriefingNote>> ListOpenThreadNotesAsync(
-        Guid userId,
-        IReadOnlyList<string> stemmedMarkers,
-        IReadOnlyList<string> literalMarkers,
-        int limit,
-        CancellationToken cancellationToken = default)
+    /// <summary>
+    /// What the user has underway. No text is inspected: the status is a fact the user recorded,
+    /// which is the whole point of replacing the old marker heuristic (note-status design.md
+    /// Decision 7).
+    /// </summary>
+    public async Task<BriefingSection<BriefingNote>> ListInProgressNotesAsync(
+        Guid userId, int limit, CancellationToken cancellationToken = default)
     {
-        if (stemmedMarkers.Count == 0 && literalMarkers.Count == 0)
-        {
-            return BriefingSection<BriefingNote>.Empty;
-        }
-
         using var connection = _dbConnectionFactory.CreateConnection();
 
-        // Two ways of matching, for one reason: the search vector is built with the Spanish
-        // configuration, which drops "todo" as a stopword - the marker a technical note is most
-        // likely to carry. websearch_to_tsquery takes the stemmable ones as free text ("a OR b"),
-        // safely; the rest are matched as substrings over the rows the user filter already cut
-        // down (design.md Decision 4).
-        //
-        // LIKE, not ILIKE, and that is the whole point: "TODO" means something as a convention
-        // only in capitals. Case-insensitively it is the Spanish word "todo", which turns up in
-        // "todo salió bien" and "sobre todo" - matching that would put half the vault in the
-        // section and make it worthless.
         const string sql = """
-            WITH q AS (
-                SELECT CASE WHEN @Stemmed IS NULL THEN NULL
-                            ELSE websearch_to_tsquery('public.spanish_unaccent', @Stemmed) END AS query
-            )
-            SELECT n.id AS Id, n.title AS Title, n.content AS Content,
+            SELECT n.id AS Id, n.title AS Title, n.content AS Content, NULL::int AS PausedForDays,
                    COUNT(*) OVER() AS TotalCount
-            FROM notes n, q
+            FROM notes n
+            WHERE n.user_id = @UserId
+              AND n.status = 'InProgress'
+            ORDER BY n.created_at DESC, n.id
+            LIMIT @Limit
+            """;
+
+        return await NotesAsync(connection, sql, new { UserId = userId, Limit = limit }, cancellationToken);
+    }
+
+    /// <summary>
+    /// The queue: notes marked pending, plus the paused ones that have stood paused since before
+    /// <paramref name="pausedBeforeUtc"/>, each carrying how many days that has been. A note paused
+    /// more recently is absent - pausing is what silences it (design.md Decision 6).
+    ///
+    /// A resurfaced note joins pending rather than in-progress on purpose: nothing has touched it
+    /// in over two weeks, so it is queued, not underway.
+    /// </summary>
+    public async Task<BriefingSection<BriefingNote>> ListPendingNotesAsync(
+        Guid userId, DateTime pausedBeforeUtc, DateTime nowUtc, int limit, CancellationToken cancellationToken = default)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+
+        // status_changed_at is never null for a note that has a status (Note.SetStatus sets both),
+        // but the comparison is written so that a null would exclude the note rather than resurface
+        // it with a nonsensical age.
+        const string sql = """
+            SELECT n.id AS Id, n.title AS Title, n.content AS Content,
+                   CASE WHEN n.status = 'Paused'
+                        THEN EXTRACT(DAY FROM @NowUtc - n.status_changed_at)::int
+                        END AS PausedForDays,
+                   COUNT(*) OVER() AS TotalCount
+            FROM notes n
             WHERE n.user_id = @UserId
               AND (
-                    (q.query IS NOT NULL AND n.search_vector @@ q.query)
-                 OR (@Literal IS NOT NULL AND (
-                        n.content LIKE ANY (@Literal) OR n.title LIKE ANY (@Literal)))
+                    n.status = 'Pending'
+                 OR (n.status = 'Paused'
+                     AND n.status_changed_at IS NOT NULL
+                     AND n.status_changed_at < @PausedBeforeUtc)
               )
             ORDER BY n.created_at DESC, n.id
             LIMIT @Limit
             """;
 
-        var parameters = new
-        {
-            UserId = userId,
-            Stemmed = stemmedMarkers.Count == 0 ? null : string.Join(" OR ", stemmedMarkers),
-            Literal = literalMarkers.Count == 0 ? null : literalMarkers.Select(m => $"%{m}%").ToArray(),
-            Limit = limit,
-        };
-
-        return await NotesAsync(connection, sql, parameters, cancellationToken);
+        return await NotesAsync(
+            connection,
+            sql,
+            new { UserId = userId, PausedBeforeUtc = pausedBeforeUtc, NowUtc = nowUtc, Limit = limit },
+            cancellationToken);
     }
 
     private static async Task<BriefingSection<BriefingNote>> NotesAsync(
@@ -127,7 +139,7 @@ public sealed class BriefingReadRepository : IBriefingReadRepository
             sql, parameters, cancellationToken: cancellationToken))).ToList();
 
         return new BriefingSection<BriefingNote>(
-            rows.Select(r => new BriefingNote(r.Id, r.Title, r.Content)).ToList(),
+            rows.Select(r => new BriefingNote(r.Id, r.Title, r.Content, r.PausedForDays)).ToList(),
             rows.Count == 0 ? 0 : (int)rows[0].TotalCount);
     }
 
@@ -135,5 +147,5 @@ public sealed class BriefingReadRepository : IBriefingReadRepository
     // holds at most a few items and a total nobody will ever push past int.
     private sealed record ReminderRow(Guid Id, string Text, DateTime DueAt, string? NoteTitle, long TotalCount);
 
-    private sealed record NoteRow(Guid Id, string? Title, string Content, long TotalCount);
+    private sealed record NoteRow(Guid Id, string? Title, string Content, int? PausedForDays, long TotalCount);
 }

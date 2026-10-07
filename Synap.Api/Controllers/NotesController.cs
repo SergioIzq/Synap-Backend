@@ -6,6 +6,7 @@ using Synap.Application.Features.Notes.Commands.AddTag;
 using Synap.Application.Features.Notes.Commands.Create;
 using Synap.Application.Features.Notes.Commands.Delete;
 using Synap.Application.Features.Notes.Commands.QuickCapture;
+using Synap.Application.Features.Notes.Commands.SetStatus;
 using Synap.Application.Features.Notes.Commands.Update;
 using Synap.Application.Features.Notes.Queries;
 using Synap.Domain;
@@ -34,6 +35,15 @@ public class NotesController : AbsController
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateNoteRequest request)
         => await SendAndHandleAsync(new UpdateNoteCommand(id, request.Title, request.Content));
 
+    /// <summary>
+    /// Sets, replaces or clears a note's status. Its own endpoint, not part of PUT: a full update
+    /// would move the note's last-modified time, and marking a note is not editing it
+    /// (note-status design.md Decision 5). A null status clears it.
+    /// </summary>
+    [HttpPatch("{id:guid}/status")]
+    public async Task<IActionResult> SetStatus(Guid id, [FromBody] SetStatusRequest request)
+        => await SendAndHandleAsync(new SetNoteStatusCommand(id, request.Status));
+
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id)
         => await SendAndHandleAsync(new DeleteNoteCommand(id));
@@ -46,15 +56,21 @@ public class NotesController : AbsController
     public async Task<IActionResult> Get(Guid id)
         => await SendAndHandleAsync(new GetNoteByIdQuery(id));
 
-    /// <summary>Paged: returns { items, page, pageSize, totalCount } (pageSize at most 50).</summary>
+    /// <summary>
+    /// Paged: returns { items, page, pageSize, totalCount } (pageSize at most 50).
+    /// <paramref name="status"/> is a comma-separated list of statuses plus "none" for notes
+    /// carrying none ("pending,inProgress", "none", "completed"); omitted means everything except
+    /// completed, unmarked notes included (note-status design.md Decision 4).
+    /// </summary>
     [HttpGet("search")]
     public async Task<IActionResult> Search(
         [FromQuery] string? q,
         [FromQuery] string? tag,
         [FromQuery] string? type,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = NoteSearchCriteria.DefaultPageSize)
-        => await SendAndHandleAsync(new SearchNotesQuery(q, tag, type, page, pageSize));
+        [FromQuery] int pageSize = NoteSearchCriteria.DefaultPageSize,
+        [FromQuery] string? status = null)
+        => await SendAndHandleAsync(new SearchNotesQuery(q, tag, type, page, pageSize, status));
 
     [HttpGet("{id:guid}/related")]
     public async Task<IActionResult> GetRelated(Guid id)
@@ -67,6 +83,9 @@ public class NotesController : AbsController
         => await SendAndHandleAsync(command);
 
     public sealed record UpdateNoteRequest(string? Title, string Content);
+
+    /// <summary>Null clears the status, leaving the note as material rather than work.</summary>
+    public sealed record SetStatusRequest(string? Status);
 
     public sealed record AddTagRequest(string TagName);
 }

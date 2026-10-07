@@ -12,6 +12,8 @@ public sealed class SearchNotesQueryHandler : IQueryHandler<SearchNotesQuery, Pa
     public static readonly Error InvalidPageSize =
         Error.Validation($"El tamaño de página debe estar entre 1 y {NoteSearchCriteria.MaxPageSize}.");
     public static readonly Error InvalidType = Error.Validation("El tipo de nota debe ser text, codeSnippet o bookmark.");
+    public static readonly Error InvalidStatus = Error.Validation(
+        $"El estado de la nota debe ser uno de: {string.Join(", ", NoteStatusFilter.AcceptedValues)}.");
 
     private readonly INoteReadRepository _noteReadRepository;
     private readonly IUserContext _userContext;
@@ -46,12 +48,21 @@ public sealed class SearchNotesQueryHandler : IQueryHandler<SearchNotesQuery, Pa
             type = Enum.Parse<NoteType>(request.Type, ignoreCase: true);
         }
 
+        // "none" is a value of the filter, not a status: it asks for the notes that are not work
+        // at all (design.md Decision 4). An unknown value fails the whole request rather than
+        // being dropped, so a typo never silently returns the wrong notes.
+        if (!NoteStatusFilter.TryParse(request.Status, out var statusFilter))
+        {
+            return Result.Failure<PagedResult<NoteSearchResult>>(InvalidStatus);
+        }
+
         var criteria = new NoteSearchCriteria(
             string.IsNullOrWhiteSpace(request.SearchTerm) ? null : request.SearchTerm.Trim(),
             string.IsNullOrWhiteSpace(request.Tag) ? null : request.Tag.Trim(),
             type,
             request.Page,
-            request.PageSize);
+            request.PageSize,
+            statusFilter);
 
         var results = await _noteReadRepository.SearchAsync(_userContext.RequireUserId(), criteria, cancellationToken);
 

@@ -35,6 +35,7 @@ public sealed class NoteReadRepository : INoteReadRepository
             )
             SELECT n.id AS Id, n.title AS Title, n.content AS Content, n.note_type AS Type,
                    n.created_at AS CreatedAt, n.updated_at AS UpdatedAt,
+                   n.status AS Status, n.status_changed_at AS StatusChangedAt,
                    n.metadata_title AS MetadataTitle, n.metadata_description AS MetadataDescription,
                    n.metadata_image_url AS MetadataImageUrl,
                    COUNT(*) OVER() AS TotalCount
@@ -42,6 +43,9 @@ public sealed class NoteReadRepository : INoteReadRepository
             WHERE n.user_id = @UserId
               AND (q.query IS NULL OR n.search_vector @@ q.query)
               AND (@Type IS NULL OR n.note_type = @Type)
+              AND (@AnyStatus
+                   OR (@IncludeWithoutStatus AND n.status IS NULL)
+                   OR n.status = ANY(@Statuses))
               AND (@Tag IS NULL OR EXISTS (
                     SELECT 1 FROM note_tags nt
                     JOIN tags t ON t.id = nt.tag_id
@@ -63,6 +67,9 @@ public sealed class NoteReadRepository : INoteReadRepository
                 Type = criteria.Type?.ToString(),
                 criteria.PageSize,
                 Offset = (criteria.Page - 1) * criteria.PageSize,
+                AnyStatus = criteria.StatusFilter.MatchesEverything,
+                criteria.StatusFilter.IncludeWithoutStatus,
+                Statuses = StatusNames(criteria),
             },
             cancellationToken: cancellationToken))).ToList();
 
@@ -86,6 +93,7 @@ public sealed class NoteReadRepository : INoteReadRepository
         const string noteSql = """
             SELECT n.id AS Id, n.title AS Title, n.content AS Content, n.note_type AS Type,
                    n.created_at AS CreatedAt, n.updated_at AS UpdatedAt,
+                   n.status AS Status, n.status_changed_at AS StatusChangedAt,
                    n.metadata_title AS MetadataTitle, n.metadata_description AS MetadataDescription,
                    n.metadata_image_url AS MetadataImageUrl,
                    1::bigint AS TotalCount
@@ -144,6 +152,7 @@ public sealed class NoteReadRepository : INoteReadRepository
                 Enum.Parse<NoteType>(r.Type),
                 r.CreatedAt,
                 r.UpdatedAt,
+                r.Status is null ? null : Enum.Parse<NoteStatus>(r.Status),
                 tagsByNoteId.GetValueOrDefault(r.Id, []),
                 r.MetadataTitle,
                 r.MetadataDescription,
@@ -160,6 +169,9 @@ public sealed class NoteReadRepository : INoteReadRepository
             WHERE n.user_id = @UserId
               AND (@SearchTerm IS NULL OR n.search_vector @@ websearch_to_tsquery('public.spanish_unaccent', @SearchTerm))
               AND (@Type IS NULL OR n.note_type = @Type)
+              AND (@AnyStatus
+                   OR (@IncludeWithoutStatus AND n.status IS NULL)
+                   OR n.status = ANY(@Statuses))
               AND (@Tag IS NULL OR EXISTS (
                     SELECT 1 FROM note_tags nt
                     JOIN tags t ON t.id = nt.tag_id
@@ -168,12 +180,36 @@ public sealed class NoteReadRepository : INoteReadRepository
 
         return connection.ExecuteScalarAsync<int>(new CommandDefinition(
             countSql,
-            new { UserId = userId, criteria.SearchTerm, criteria.Tag, Type = criteria.Type?.ToString() },
+            new
+            {
+                UserId = userId,
+                criteria.SearchTerm,
+                criteria.Tag,
+                Type = criteria.Type?.ToString(),
+                AnyStatus = criteria.StatusFilter.MatchesEverything,
+                criteria.StatusFilter.IncludeWithoutStatus,
+                Statuses = StatusNames(criteria),
+            },
             cancellationToken: cancellationToken));
     }
 
+    /// <summary>
+    /// The statuses as stored (by name). Always an array, never null, even when no status was
+    /// named: `= ANY(ARRAY[]::text[])` is simply false, which is exactly the intent, whereas a
+    /// typed null makes Postgres give up with "could not determine data type of parameter".
+    ///
+    /// Note what the SQL around this does NOT say: `n.status &lt;&gt; 'Completed'`. In Postgres
+    /// `NULL &lt;&gt; 'Completed'` is NULL, which WHERE discards, so that version would silently
+    /// hide every note carrying no status - most of a vault (note-status design.md Decision 2,
+    /// and specs/knowledge-vault "A note without a status is never hidden by default"). The
+    /// default filter instead names the statuses it wants and asks for IS NULL explicitly.
+    /// </summary>
+    private static string[] StatusNames(NoteSearchCriteria criteria)
+        => criteria.StatusFilter.Statuses.Select(s => s.ToString()).ToArray();
+
     private sealed record NoteRow(
         Guid Id, string? Title, string Content, string Type, DateTime CreatedAt, DateTime UpdatedAt,
+        string? Status, DateTime? StatusChangedAt,
         string? MetadataTitle, string? MetadataDescription, string? MetadataImageUrl, long TotalCount);
 
     private sealed record NoteTagRow(Guid NoteId, string Name);

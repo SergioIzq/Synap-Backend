@@ -12,9 +12,17 @@ public interface INoteReadRepository
     Task<IReadOnlyList<string>> ListTagsAsync(Guid userId, CancellationToken cancellationToken = default);
 }
 
-/// <summary>Already-validated search input: Page >= 1, PageSize within NoteSearchCriteria's bounds.</summary>
-public sealed record NoteSearchCriteria(string? SearchTerm, string? Tag, NoteType? Type, int Page, int PageSize)
+/// <summary>
+/// Already-validated search input: Page >= 1, PageSize within NoteSearchCriteria's bounds.
+/// <paramref name="Status"/> defaults to <see cref="NoteStatusFilter.Default"/> - everything
+/// except completed, unmarked notes included (note-status design.md Decision 4).
+/// </summary>
+public sealed record NoteSearchCriteria(
+    string? SearchTerm, string? Tag, NoteType? Type, int Page, int PageSize, NoteStatusFilter? Status = null)
 {
+    /// <summary>Never null in practice: an omitted filter is the default one.</summary>
+    public NoteStatusFilter StatusFilter => Status ?? NoteStatusFilter.Default;
+
     public const int DefaultPageSize = 20;
     public const int MaxPageSize = 50;
 }

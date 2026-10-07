@@ -110,4 +110,33 @@ public class NoteIsolationTests
         Assert.Contains(results, r => r.Id == noteA.Id.Value);
         Assert.DoesNotContain(results, r => r.Id == noteB.Id.Value);
     }
+
+    /// <summary>
+    /// note-status task 3.5 - specs/knowledge-vault "Status filter does not cross users". Both
+    /// users mark a note with the same status, which must not make either visible to the other.
+    /// </summary>
+    [Fact]
+    public async Task Search_scoped_by_status_never_returns_another_users_note_with_the_same_status()
+    {
+        await using var context = _fixture.CreateContext();
+        var noteWriteRepository = new NoteWriteRepository(context);
+        var noteReadRepository = new NoteReadRepository(new TestDbConnectionFactory(_fixture.ConnectionString));
+
+        var userA = UserId.CreateFromDatabase(Guid.NewGuid());
+        var userB = UserId.CreateFromDatabase(Guid.NewGuid());
+
+        var noteA = Note.Create(userA, NoteType.Text, null, "A's pending note", NoteStatus.Pending);
+        var noteB = Note.Create(userB, NoteType.Text, null, "B's pending note", NoteStatus.Pending);
+
+        await noteWriteRepository.CreateAsync(noteA, default);
+        await noteWriteRepository.CreateAsync(noteB, default);
+        await context.SaveChangesAsync();
+
+        var results = (await noteReadRepository.SearchAsync(
+            userA.Value,
+            new NoteSearchCriteria(null, null, null, 1, 50, NoteStatusFilter.Of(NoteStatus.Pending)))).Items;
+
+        Assert.Contains(results, r => r.Id == noteA.Id.Value);
+        Assert.DoesNotContain(results, r => r.Id == noteB.Id.Value);
+    }
 }

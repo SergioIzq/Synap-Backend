@@ -158,12 +158,15 @@ public class BriefingOnDemandTests
             return Task.FromResult(Untagged);
         }
 
-        public Task<BriefingSection<BriefingNote>> ListOpenThreadNotesAsync(
-            Guid userId,
-            IReadOnlyList<string> stemmedMarkers,
-            IReadOnlyList<string> literalMarkers,
-            int limit,
-            CancellationToken cancellationToken = default)
+        public Task<BriefingSection<BriefingNote>> ListInProgressNotesAsync(
+            Guid userId, int limit, CancellationToken cancellationToken = default)
+        {
+            AskedFor.Add(userId);
+            return Task.FromResult(BriefingSection<BriefingNote>.Empty);
+        }
+
+        public Task<BriefingSection<BriefingNote>> ListPendingNotesAsync(
+            Guid userId, DateTime pausedBeforeUtc, DateTime nowUtc, int limit, CancellationToken cancellationToken = default)
         {
             AskedFor.Add(userId);
             return Task.FromResult(BriefingSection<BriefingNote>.Empty);

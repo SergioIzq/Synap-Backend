@@ -4,8 +4,9 @@ using Synap.Domain;
 namespace Synap.UnitTests.Features.Briefing;
 
 /// <summary>
-/// daily-briefing tasks 3.1 to 3.3 - specs/briefing "What a briefing contains". A pure function,
-/// so every promise is checked with a fixed clock, no Telegram and no database.
+/// daily-briefing tasks 3.1 to 3.3, revised by note-status task 6.5 - specs/briefing "What a
+/// briefing contains". A pure function, so every promise is checked with a fixed clock, no Telegram
+/// and no database.
 /// </summary>
 public class BriefingMessageTests
 {
@@ -17,20 +18,23 @@ public class BriefingMessageTests
     private static BriefingReminder Reminder(string text, DateTime? dueAt = null, string? noteTitle = null)
         => new(Guid.NewGuid(), text, dueAt ?? HalfPastNineInMadrid, noteTitle);
 
-    private static BriefingNote Note(string? title, string content = "contenido de la nota")
-        => new(Guid.NewGuid(), title, content);
+    private static BriefingNote Note(string? title, string content = "contenido de la nota", int? pausedForDays = null)
+        => new(Guid.NewGuid(), title, content, pausedForDays);
 
     private static BriefingContent With(
         IReadOnlyList<BriefingReminder>? reminders = null,
+        IReadOnlyList<BriefingNote>? inProgress = null,
+        IReadOnlyList<BriefingNote>? pending = null,
         IReadOnlyList<BriefingNote>? untagged = null,
-        IReadOnlyList<BriefingNote>? openThreads = null,
         int? remindersTotal = null,
-        int? untaggedTotal = null,
-        int? openThreadsTotal = null)
+        int? inProgressTotal = null,
+        int? pendingTotal = null,
+        int? untaggedTotal = null)
         => new(
             new BriefingSection<BriefingReminder>(reminders ?? [], remindersTotal ?? reminders?.Count ?? 0),
-            new BriefingSection<BriefingNote>(untagged ?? [], untaggedTotal ?? untagged?.Count ?? 0),
-            new BriefingSection<BriefingNote>(openThreads ?? [], openThreadsTotal ?? openThreads?.Count ?? 0));
+            new BriefingSection<BriefingNote>(inProgress ?? [], inProgressTotal ?? inProgress?.Count ?? 0),
+            new BriefingSection<BriefingNote>(pending ?? [], pendingTotal ?? pending?.Count ?? 0),
+            new BriefingSection<BriefingNote>(untagged ?? [], untaggedTotal ?? untagged?.Count ?? 0));
 
     // ---- 3.1 What it says ----
 
@@ -80,15 +84,62 @@ public class BriefingMessageTests
     }
 
     [Fact]
-    public void The_three_sections_appear_with_their_own_headings()
+    public void The_four_sections_appear_with_their_own_headings()
     {
         var text = BriefingMessage.Text(
-            With(reminders: [Reminder("Banco")], untagged: [Note("Sin etiquetar")], openThreads: [Note("Migración")]),
+            With(
+                reminders: [Reminder("Banco")], inProgress: [Note("Migrar auth")],
+                pending: [Note("Hablar con X")], untagged: [Note("Sin etiquetar")]),
             Madrid)!;
 
         Assert.Contains("Recordatorios de hoy", text);
+        Assert.Contains("En desarrollo", text);
+        Assert.Contains("Pendiente", text);
         Assert.Contains("Notas sin etiquetar", text);
-        Assert.Contains("Hilos abiertos", text);
+        // The heuristic it replaced is gone for good (note-status design.md Decision 7).
+        Assert.DoesNotContain("Hilos abiertos", text);
+    }
+
+    /// <summary>
+    /// note-status design.md Decision 7 - in progress first: it is the shorter and more urgent
+    /// section, and the one that says what is actually at hand.
+    /// </summary>
+    [Fact]
+    public void In_progress_comes_before_pending()
+    {
+        var text = BriefingMessage.Text(
+            With(inProgress: [Note("Migrar auth")], pending: [Note("Hablar con X")]), Madrid)!;
+
+        Assert.True(text.IndexOf("En desarrollo", StringComparison.Ordinal)
+            < text.IndexOf("Pendiente", StringComparison.Ordinal));
+    }
+
+    /// <summary>specs/briefing "A long-paused note resurfaces".</summary>
+    [Fact]
+    public void A_resurfaced_note_says_how_long_it_has_been_paused()
+    {
+        var text = BriefingMessage.Text(
+            With(pending: [Note("Hablar con X", pausedForDays: 34)]), Madrid)!;
+
+        Assert.Contains("Hablar con X", text);
+        Assert.Contains("pausada hace 34 días", text);
+    }
+
+    [Fact]
+    public void A_note_paused_for_a_single_day_is_said_in_the_singular()
+    {
+        var text = BriefingMessage.Text(With(pending: [Note("Hablar con X", pausedForDays: 1)]), Madrid)!;
+
+        Assert.Contains("pausada hace 1 día", text);
+        Assert.DoesNotContain("1 días", text);
+    }
+
+    [Fact]
+    public void An_ordinary_pending_note_says_nothing_about_pausing()
+    {
+        var text = BriefingMessage.Text(With(pending: [Note("Hablar con X")]), Madrid)!;
+
+        Assert.DoesNotContain("pausada", text);
     }
 
     [Fact]
@@ -110,7 +161,22 @@ public class BriefingMessageTests
 
         Assert.Contains("Notas sin etiquetar", text);
         Assert.DoesNotContain("Recordatorios de hoy", text);
-        Assert.DoesNotContain("Hilos abiertos", text);
+        Assert.DoesNotContain("En desarrollo", text);
+        Assert.DoesNotContain("Pendiente", text);
+    }
+
+    /// <summary>
+    /// note-status task 6.5 - the day this ships nobody has marked anything, so both status
+    /// sections are absent and the briefing is still a sensible message.
+    /// </summary>
+    [Fact]
+    public void A_briefing_with_nothing_marked_shows_neither_status_section()
+    {
+        var text = BriefingMessage.Text(With(reminders: [Reminder("Banco")]), Madrid)!;
+
+        Assert.Contains("Recordatorios de hoy", text);
+        Assert.DoesNotContain("En desarrollo", text);
+        Assert.DoesNotContain("Pendiente", text);
     }
 
     /// <summary>specs/briefing "Empty day" - not an empty message, no message at all.</summary>
@@ -128,6 +194,8 @@ public class BriefingMessageTests
     public void There_is_a_fixed_text_for_a_day_with_nothing_to_report()
     {
         Assert.Contains("nada pendiente", BriefingMessage.NothingToReport);
+        // It must not keep promising the section that no longer exists.
+        Assert.DoesNotContain("hilos abiertos", BriefingMessage.NothingToReport);
     }
 
     // ---- 3.3 Counts ----
@@ -159,12 +227,14 @@ public class BriefingMessageTests
         var text = BriefingMessage.Text(
             With(
                 reminders: [Reminder("Banco")], remindersTotal: 3,
-                untagged: [Note("Sin etiquetar")], untaggedTotal: 1,
-                openThreads: [Note("Migración")], openThreadsTotal: 8),
+                inProgress: [Note("Migrar auth")], inProgressTotal: 2,
+                pending: [Note("Hablar con X")], pendingTotal: 8,
+                untagged: [Note("Sin etiquetar")], untaggedTotal: 1),
             Madrid)!;
 
         Assert.Contains("Recordatorios de hoy</b> (3)", text);
+        Assert.Contains("En desarrollo</b> (2)", text);
+        Assert.Contains("Pendiente</b> (8)", text);
         Assert.Contains("Notas sin etiquetar</b> (1)", text);
-        Assert.Contains("Hilos abiertos</b> (8)", text);
     }
 }

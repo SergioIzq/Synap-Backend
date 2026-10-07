@@ -10,6 +10,9 @@ namespace Synap.Application.Features.Notes.Commands.Create;
 
 public sealed class CreateNoteCommandHandler : ICommandHandler<CreateNoteCommand, Guid>
 {
+    public static readonly Error InvalidStatus = Error.Validation(
+        $"El estado de la nota debe ser uno de: {string.Join(", ", NoteStatusWire.AcceptedValues)}.");
+
     private readonly INoteWriteRepository _noteWriteRepository;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IUserContext _userContext;
@@ -34,7 +37,13 @@ public sealed class CreateNoteCommandHandler : ICommandHandler<CreateNoteCommand
     {
         var userId = _userContext.RequireUserId();
 
-        // Validate every tag before touching anything: a bad tag rejects the whole note.
+        // Validate everything before touching anything: a bad tag or a bad status rejects the
+        // whole note, creating neither it nor any tag.
+        if (!NoteStatusWire.TryParse(request.Status, out var status))
+        {
+            return Result.Failure<Guid>(InvalidStatus);
+        }
+
         var tagNames = TagAssignment.Normalize(request.Tags);
         if (tagNames.IsFailure)
         {
@@ -57,7 +66,8 @@ public sealed class CreateNoteCommandHandler : ICommandHandler<CreateNoteCommand
             string.IsNullOrWhiteSpace(request.Title) ? null : request.Title.Trim(),
             request.Content,
             cancellationToken,
-            tags);
+            tags,
+            status);
 
         return Result.Success(note.Id.Value);
     }

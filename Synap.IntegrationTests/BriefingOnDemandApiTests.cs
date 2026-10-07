@@ -75,6 +75,58 @@ public class BriefingOnDemandApiTests
         Assert.Contains("Sin etiquetar", briefing);
     }
 
+    /// <summary>
+    /// note-status task 6.6 - specs/briefing "Notes in progress" and "Pending notes" end to end:
+    /// the two status sections appear with the notes the user marked, and the heuristic they
+    /// replaced is gone.
+    /// </summary>
+    [Fact]
+    public async Task The_briefing_reports_the_notes_the_user_marked_in_their_own_sections()
+    {
+        var (client, chatId) = await LinkedAsync();
+        await MarkedNoteAsync(client, "Migrar auth", "inProgress");
+        await MarkedNoteAsync(client, "Hablar con el proveedor", "pending");
+        await MarkedNoteAsync(client, "Ya cerrada", "completed");
+        await MarkedNoteAsync(client, "Pausada hoy", "paused");
+
+        (await client.PostAsync("/api/settings/briefing/send", null)).EnsureSuccessStatusCode();
+
+        var briefing = Assert.Single(BriefingsTo(chatId));
+        Assert.Contains("En desarrollo", briefing);
+        Assert.Contains("Migrar auth", briefing);
+        Assert.Contains("Pendiente", briefing);
+        Assert.Contains("Hablar con el proveedor", briefing);
+        Assert.DoesNotContain("Ya cerrada", briefing);
+        Assert.DoesNotContain("Pausada hoy", briefing);
+        Assert.DoesNotContain("Hilos abiertos", briefing);
+    }
+
+    /// <summary>
+    /// note-status task 6.6 - a vault where nothing is marked, which is every vault the day this
+    /// ships: neither status section appears, and a note whose text carries the old markers is not
+    /// smuggled back in by them (design.md Decision 7).
+    /// </summary>
+    [Fact]
+    public async Task A_user_who_has_marked_nothing_gets_a_briefing_without_the_status_sections()
+    {
+        var (client, chatId) = await LinkedAsync();
+        (await client.PostAsJsonAsync("/api/notes",
+            new { type = "Text", title = "TODO del sprint", content = "esto está pendiente de revisar", tags = new[] { "infra" } }))
+            .EnsureSuccessStatusCode();
+
+        (await client.PostAsync("/api/settings/briefing/send", null)).EnsureSuccessStatusCode();
+
+        var briefing = Assert.Single(BriefingsTo(chatId));
+        Assert.DoesNotContain("En desarrollo", briefing);
+        Assert.DoesNotContain("Pendiente", briefing);
+        Assert.DoesNotContain("Hilos abiertos", briefing);
+    }
+
+    private static async Task MarkedNoteAsync(HttpClient client, string title, string status)
+        => (await client.PostAsJsonAsync("/api/notes",
+                new { type = "Text", title, content = "contenido", status, tags = new[] { "infra" } }))
+            .EnsureSuccessStatusCode();
+
     /// <summary>specs/briefing "Asked for with nothing to report".</summary>
     [Fact]
     public async Task Asking_on_a_day_with_nothing_to_report_still_answers()

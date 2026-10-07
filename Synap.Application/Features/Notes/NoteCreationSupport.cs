@@ -19,9 +19,10 @@ internal static class NoteCreationSupport
         string? title,
         string content,
         CancellationToken cancellationToken,
-        IReadOnlyList<Tag>? tags = null)
+        IReadOnlyList<Tag>? tags = null,
+        NoteStatus? status = null)
     {
-        var note = Note.Create(UserId.CreateFromDatabase(userId), type, title, content);
+        var note = Note.Create(UserId.CreateFromDatabase(userId), type, title, content, status);
         foreach (var tag in tags ?? [])
         {
             note.AddTag(tag);

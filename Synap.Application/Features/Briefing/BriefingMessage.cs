@@ -14,7 +14,7 @@ namespace Synap.Application.Features.Briefing;
 public static class BriefingMessage
 {
     /// <summary>What a briefing the user asked for says when there is nothing to report.</summary>
-    public const string NothingToReport = "☀️ Hoy no tienes nada pendiente: ni recordatorios, ni notas sin etiquetar, ni hilos abiertos.";
+    public const string NothingToReport = "☀️ Hoy no tienes nada pendiente: ni recordatorios, ni notas en curso o pendientes, ni notas sin etiquetar.";
 
     private static readonly CultureInfo Spanish = new("es-ES");
 
@@ -42,13 +42,29 @@ public static class BriefingMessage
             return $"{at} · {Escape(r.Text)}{note}";
         });
 
+        // In progress before pending, and both before the untagged notes: the shortest and most
+        // urgent section first, so the three things actually at hand are not read past
+        // (note-status design.md Decision 7).
+        Section(text, "🔨", "En desarrollo", content.InProgress, NoteLine);
+        Section(text, "📋", "Pendiente", content.Pending, NoteLine);
         Section(text, "📌", "Notas sin etiquetar", content.UntaggedNotes, NoteLine);
-        Section(text, "🔎", "Hilos abiertos", content.OpenThreads, NoteLine);
 
         return text.ToString();
     }
 
-    private static string NoteLine(BriefingNote note) => Escape(NoteDisplay.Label(note.Title, note.Content));
+    /// <summary>
+    /// A note's line. A note that rejoined the pending section after standing paused too long says
+    /// how long it has been paused, so the user can tell it apart from something they queued today
+    /// (specs/briefing "A long-paused note resurfaces").
+    /// </summary>
+    private static string NoteLine(BriefingNote note)
+    {
+        var label = Escape(NoteDisplay.Label(note.Title, note.Content));
+
+        return note.PausedForDays is { } days
+            ? $"{label} <i>⏸️ pausada hace {days} {(days == 1 ? "día" : "días")}</i>"
+            : label;
+    }
 
     /// <summary>
     /// One section, or nothing at all when it is empty - an empty heading is noise the user has to

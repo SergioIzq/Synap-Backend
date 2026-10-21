@@ -63,6 +63,12 @@ public sealed class User : AbsEntity<UserId>
 
     public bool HasTelegram => TelegramChatId is not null;
 
+    // Inicio en curso de la conexión con Google Calendar (calendar-integration design.md Decisión
+    // 3): el nonce que va cifrado en el `state` de OAuth. Un solo uso y uno por usuario, como el
+    // código de Telegram.
+    public string? CalendarOAuthNonce { get; private set; }
+    public DateTime? CalendarOAuthExpiresAt { get; private set; }
+
     // The morning briefing (daily-briefing design.md Decision 3). Off until asked for, so a null
     // hour is the same as off; the date is the last local day a briefing was *resolved* for this
     // user - sent, or found to have nothing to report - which is what stops a second one that day.
@@ -256,5 +262,30 @@ public sealed class User : AbsEntity<UserId>
     {
         TelegramChatId = null;
         ClearTelegramLink();
+    }
+
+    /// <summary>Sustituye cualquier inicio anterior: solo vale el último consentimiento pedido.</summary>
+    public void StartCalendarOAuth(string nonce, DateTime expiresAtUtc)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(nonce);
+
+        CalendarOAuthNonce = nonce;
+        CalendarOAuthExpiresAt = expiresAtUtc;
+    }
+
+    /// <summary>
+    /// True si el nonce es el vigente de este usuario. Lo borra siempre que hay uno, coincida o no:
+    /// una respuesta de Google se acepta una sola vez (specs/calendar-integration "Respuesta de
+    /// Google ajena o caducada").
+    /// </summary>
+    public bool ConsumeCalendarOAuth(string? nonce, DateTime nowUtc)
+    {
+        var valid = CalendarOAuthNonce is not null
+            && CalendarOAuthExpiresAt is { } expiresAt && nowUtc <= expiresAt
+            && string.Equals(CalendarOAuthNonce, nonce, StringComparison.Ordinal);
+
+        CalendarOAuthNonce = null;
+        CalendarOAuthExpiresAt = null;
+        return valid;
     }
 }

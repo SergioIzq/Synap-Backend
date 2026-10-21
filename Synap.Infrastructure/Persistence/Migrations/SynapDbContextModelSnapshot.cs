@@ -22,6 +22,53 @@ namespace Synap.Infrastructure.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Synap.Domain.CalendarConnection", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("AccountLabel")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("account_label");
+
+                    b.Property<string>("CalendarRef")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("calendar_ref");
+
+                    b.Property<DateTime>("ConnectedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("connected_at");
+
+                    b.Property<string>("CredentialsEncrypted")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("credentials_encrypted");
+
+                    b.Property<DateTime>("FechaCreacion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("NeedsReconnectSince")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("needs_reconnect_since");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("provider");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("calendar_connections", (string)null);
+                });
+
             modelBuilder.Entity("Synap.Domain.MemoryEntry", b =>
                 {
                     b.Property<Guid>("Id")
@@ -223,6 +270,15 @@ namespace Synap.Infrastructure.Persistence.Migrations
                         .HasColumnType("date")
                         .HasColumnName("briefing_last_resolved_on");
 
+                    b.Property<DateTime?>("CalendarOAuthExpiresAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("calendar_oauth_expires_at");
+
+                    b.Property<string>("CalendarOAuthNonce")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("calendar_oauth_nonce");
+
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -323,6 +379,15 @@ namespace Synap.Infrastructure.Persistence.Migrations
                     b.HasIndex("tag_id");
 
                     b.ToTable("note_tags", (string)null);
+                });
+
+            modelBuilder.Entity("Synap.Domain.CalendarConnection", b =>
+                {
+                    b.HasOne("Synap.Domain.User", null)
+                        .WithOne()
+                        .HasForeignKey("Synap.Domain.CalendarConnection", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Synap.Domain.MemoryEntry", b =>

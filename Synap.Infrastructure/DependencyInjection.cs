@@ -7,6 +7,7 @@ using Synap.Domain;
 using Synap.Infrastructure.BackgroundJobs;
 using Synap.Infrastructure.Persistence;
 using Synap.Infrastructure.Persistence.Command;
+using Synap.Infrastructure.Persistence.Data.Calendar;
 using Synap.Infrastructure.Persistence.Data.Memory;
 using Synap.Infrastructure.Persistence.Data.Notes;
 using Synap.Infrastructure.Persistence.Data.Reminders;
@@ -14,7 +15,9 @@ using Synap.Infrastructure.Persistence.Data.Tags;
 using Synap.Infrastructure.Persistence.Data.Users;
 using Synap.Infrastructure.Services.Ai;
 using Synap.Infrastructure.Services.Auth;
+using Synap.Application.Features.Calendar;
 using Synap.Infrastructure.Services.Bookmarks;
+using Synap.Infrastructure.Services.Calendar;
 using Synap.Infrastructure.Services.Email;
 using Synap.Application.Features.Briefing;
 using Synap.Application.Features.Reminders;
@@ -65,6 +68,8 @@ public static class DependencyInjection
         services.AddScoped<IReminderWriteRepository, ReminderWriteRepository>();
         services.AddScoped<IReminderReadRepository, ReminderReadRepository>();
         services.AddScoped<IBriefingReadRepository, Persistence.Data.Briefing.BriefingReadRepository>();
+        services.AddScoped<ICalendarConnectionRepository, CalendarConnectionRepository>();
+        services.AddScoped<ICalendarReader, CalendarReader>();
 
         // Built eagerly: a missing or too-short JWT_SECRET_KEY stops the API at startup with a
         // clear message instead of failing every login with a 500.
@@ -103,6 +108,12 @@ public static class DependencyInjection
         services.AddScoped<BriefingDeliveryService>();
         services.AddSingleton<WithheldBriefingRecorder>();
         services.AddHostedService<BriefingSweepHostedService>();
+
+        // Calendario (calendar-integration design.md Decisión 1): un adaptador por proveedor, y el
+        // CalendarReader los recibe todos y elige el de la conexión del usuario.
+        services.Configure<GoogleCalendarOptions>(configuration.GetSection(GoogleCalendarOptions.SectionName));
+        services.AddHttpClient<GoogleCalendarClient>(client => client.Timeout = TimeSpan.FromSeconds(10));
+        services.AddScoped<ICalendarProviderClient>(sp => sp.GetRequiredService<GoogleCalendarClient>());
 
         services.AddHttpClient<ITelegramSender, TelegramSender>(client =>
         {

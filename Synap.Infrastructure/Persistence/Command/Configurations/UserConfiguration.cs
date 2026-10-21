@@ -70,6 +70,10 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         // turns it on - a filtered index keeps that question free on a deployment where no one has.
         builder.HasIndex(u => u.BriefingEnabled).HasFilter("briefing_enabled");
 
+        // Inicio en curso de la conexión con Google Calendar (calendar-integration design.md Decisión 3).
+        builder.Property(u => u.CalendarOAuthNonce).HasColumnName("calendar_oauth_nonce").HasMaxLength(64);
+        builder.Property(u => u.CalendarOAuthExpiresAt).HasColumnName("calendar_oauth_expires_at");
+
         builder.Property(u => u.FechaCreacion)
             .HasColumnName("created_at")
             .IsRequired()

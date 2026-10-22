@@ -30,6 +30,7 @@ public class AssistantAgentTests
     private readonly FakeMemoryRepository _memory = new();
     private readonly FakeReminderRepository _reminders = new();
     private readonly FakeUnitOfWork _unitOfWork = new();
+    private readonly Briefing.FakeCalendarReader _calendar = new();
     private readonly RecordingLogger<AssistantAgent> _logger = new();
     private readonly AssistantAgent _agent;
 
@@ -41,7 +42,7 @@ public class AssistantAgentTests
             new AddTagCommandHandler(_notes, _tags, _unitOfWork, context),
             new AddMemoryEntryCommandHandler(_memory, _unitOfWork, context),
             new CreateReminderCommandHandler(_reminders, new NotesView(_notes), _unitOfWork, context));
-        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes), _logger);
+        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes), _calendar, _logger);
     }
 
     private Note SeedNote(Guid owner, string title, string content)
@@ -266,6 +267,7 @@ public class AssistantAgentReminderTests
     private readonly FakeMemoryRepository _memory = new();
     private readonly FakeReminderRepository _reminders = new();
     private readonly FakeUnitOfWork _unitOfWork = new();
+    private readonly Briefing.FakeCalendarReader _calendar = new();
     private readonly RecordingLogger<AssistantAgent> _logger = new();
     private readonly AssistantAgent _agent;
 
@@ -277,7 +279,7 @@ public class AssistantAgentReminderTests
             new AddTagCommandHandler(_notes, _tags, _unitOfWork, context),
             new AddMemoryEntryCommandHandler(_memory, _unitOfWork, context),
             new CreateReminderCommandHandler(_reminders, new NotesView(_notes), _unitOfWork, context));
-        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes), _logger);
+        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes), _calendar, _logger);
     }
 
     private Task<AgentOutcome> AskAsync(string question = "recuérdame algo", string? timezone = Madrid)
@@ -339,10 +341,16 @@ public class AssistantAgentReminderTests
 
         var tool = Assert.Single(_ai.StepCalls[0].Tools!, t => t.Name == "set_reminder");
         var required = tool.Parameters.GetProperty("required").EnumerateArray().Select(p => p.GetString()).ToList();
-        Assert.Equal(["text", "when"], required);
+        // Only the text is unconditionally required: since calendar-integration task 7.2 the same
+        // tool also sets a reminder relative to a calendar event, where "event" replaces "when" -
+        // so the schema says so in the description rather than demanding both.
+        Assert.Equal(["text"], required);
         var properties = tool.Parameters.GetProperty("properties");
         Assert.True(properties.TryGetProperty("note_id", out _));
         Assert.True(properties.TryGetProperty("recurrence", out _));
+        Assert.Contains(
+            "Required unless \"event\" is given",
+            properties.GetProperty("when").GetProperty("description").GetString());
         Assert.Contains("never on your own initiative", tool.Description);
     }
 
@@ -610,6 +618,7 @@ public class AssistantAgentClaimGuardTests
     private readonly FakeMemoryRepository _memory = new();
     private readonly FakeReminderRepository _reminders = new();
     private readonly FakeUnitOfWork _unitOfWork = new();
+    private readonly Briefing.FakeCalendarReader _calendar = new();
     private readonly RecordingLogger<AssistantAgent> _logger = new();
     private readonly AssistantAgent _agent;
 
@@ -621,7 +630,7 @@ public class AssistantAgentClaimGuardTests
             new AddTagCommandHandler(_notes, _tags, _unitOfWork, context),
             new AddMemoryEntryCommandHandler(_memory, _unitOfWork, context),
             new CreateReminderCommandHandler(_reminders, new NotesView(_notes), _unitOfWork, context));
-        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes), _logger);
+        _agent = new AssistantAgent(_ai, sender, new NotesView(_notes), _calendar, _logger);
     }
 
     private Task<AgentOutcome> AskAsync(string question = "recuérdame hoy a las 20:20 sacar la basura")

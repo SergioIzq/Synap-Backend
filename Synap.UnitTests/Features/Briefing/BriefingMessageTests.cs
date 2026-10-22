@@ -21,7 +21,18 @@ public class BriefingMessageTests
     private static BriefingNote Note(string? title, string content = "contenido de la nota", int? pausedForDays = null)
         => new(Guid.NewGuid(), title, content, pausedForDays);
 
+    private static BriefingEvent Event(
+        string title, int startHourUtc = 7, int endHourUtc = 8, bool allDay = false, params BriefingNote[] related)
+        => new(
+            allDay
+                ? CalendarEvent.AllDay(title, new DateOnly(2026, 9, 30))
+                : new CalendarEvent(title, new DateTime(2026, 9, 30, startHourUtc, 30, 0, DateTimeKind.Utc),
+                    new DateTime(2026, 9, 30, endHourUtc, 30, 0, DateTimeKind.Utc)),
+            related);
+
     private static BriefingContent With(
+        IReadOnlyList<BriefingEvent>? events = null,
+        int? eventsTotal = null,
         IReadOnlyList<BriefingReminder>? reminders = null,
         IReadOnlyList<BriefingNote>? inProgress = null,
         IReadOnlyList<BriefingNote>? pending = null,
@@ -29,12 +40,147 @@ public class BriefingMessageTests
         int? remindersTotal = null,
         int? inProgressTotal = null,
         int? pendingTotal = null,
-        int? untaggedTotal = null)
+        int? untaggedTotal = null,
+        BriefingCalendar? calendar = null)
         => new(
+            calendar ?? new BriefingCalendar.Events(new BriefingSection<BriefingEvent>(events ?? [], eventsTotal ?? events?.Count ?? 0)),
             new BriefingSection<BriefingReminder>(reminders ?? [], remindersTotal ?? reminders?.Count ?? 0),
             new BriefingSection<BriefingNote>(inProgress ?? [], inProgressTotal ?? inProgress?.Count ?? 0),
             new BriefingSection<BriefingNote>(pending ?? [], pendingTotal ?? pending?.Count ?? 0),
             new BriefingSection<BriefingNote>(untagged ?? [], untaggedTotal ?? untagged?.Count ?? 0));
+
+    // ---- The day's events (calendar-integration task 5.4) ----
+
+    /// <summary>specs/briefing "Today's events".</summary>
+    [Fact]
+    public void An_event_is_stated_with_its_title_and_local_time()
+    {
+        var text = BriefingMessage.Text(With(events: [Event("Demo con el cliente")]), Madrid)!;
+
+        Assert.Contains("📅 <b>Hoy en tu calendario</b> (1)", text);
+        Assert.Contains("09:30-10:30 · <b>Demo con el cliente</b>", text);
+        // 07:30 is the UTC instant, which is not what the user reads.
+        Assert.DoesNotContain("07:30", text);
+    }
+
+    /// <summary>
+    /// design.md Decision 6 - first, because it is the only section tied to the clock.
+    /// </summary>
+    [Fact]
+    public void The_events_come_before_the_reminders()
+    {
+        var text = BriefingMessage.Text(
+            With(events: [Event("Demo con el cliente")], reminders: [Reminder("Llamar al banco")]), Madrid)!;
+
+        Assert.True(
+            text.IndexOf("📅 <b>Hoy en tu calendario</b>", StringComparison.Ordinal)
+                < text.IndexOf("⏰ <b>Recordatorios de hoy</b>", StringComparison.Ordinal),
+            text);
+    }
+
+    /// <summary>specs/calendar-integration "An all-day event".</summary>
+    [Fact]
+    public void An_all_day_event_says_so_rather_than_naming_a_time()
+    {
+        var text = BriefingMessage.Text(
+            With(events: [Event("Festivo local", startHourUtc: 0, endHourUtc: 0, allDay: true)]), Madrid)!;
+
+        Assert.Contains("todo el día · <b>Festivo local</b>", text);
+        Assert.DoesNotContain("00:30", text);
+    }
+
+    /// <summary>specs/briefing "An event with related notes".</summary>
+    [Fact]
+    public void An_events_related_notes_hang_off_it()
+    {
+        var text = BriefingMessage.Text(
+            With(events: [Event("Revisión OAuth", related: [Note("Migrar auth a OAuth"), Note(null, "apuntes del token")])]),
+            Madrid)!;
+
+        Assert.Contains("09:30-10:30 · <b>Revisión OAuth</b>", text);
+        Assert.Contains("↳ Migrar auth a OAuth", text);
+        // A note with no title is identified by a preview of its text, as everywhere else.
+        Assert.Contains("↳ apuntes del token", text);
+    }
+
+    /// <summary>specs/briefing "An event with no related notes" - listed, on its own.</summary>
+    [Fact]
+    public void An_event_with_no_related_notes_is_listed_alone()
+    {
+        var text = BriefingMessage.Text(With(events: [Event("Dentista")]), Madrid)!;
+
+        Assert.Contains("· <b>Dentista</b>", text);
+        Assert.DoesNotContain("↳", text);
+    }
+
+    /// <summary>
+    /// specs/briefing "No calendar connected" - when the day has no events (empty Events section)
+    /// the section is omitted silently, just like every empty section.
+    /// </summary>
+    [Fact]
+    public void Without_events_there_is_no_section_at_all()
+    {
+        var text = BriefingMessage.Text(With(reminders: [Reminder("Llamar al banco")]), Madrid)!;
+
+        Assert.DoesNotContain("📅", text);
+        Assert.DoesNotContain("Hoy</b>", text);
+        Assert.Contains("Llamar al banco", text);
+    }
+
+    /// <summary>
+    /// specs/briefing "The calendar could not be read" - an Unreadable calendar shows a notice
+    /// line (not a full section) so the user knows there may be events they are not seeing.
+    /// </summary>
+    [Fact]
+    public void An_unreadable_calendar_shows_a_notice_line()
+    {
+        var text = BriefingMessage.Text(
+            With(reminders: [Reminder("Llamar al banco")],
+                 calendar: new BriefingCalendar.Unreadable(NeedsReconnect: false)),
+            Madrid)!;
+
+        Assert.Contains("📅 No se ha podido leer el calendario.", text);
+        Assert.DoesNotContain("<b>Hoy en tu calendario</b>", text);
+    }
+
+    /// <summary>
+    /// specs/briefing "Reconnect required" - when NeedsReconnect is true, the notice asks to
+    /// reconnect in Settings.
+    /// </summary>
+    [Fact]
+    public void An_unreadable_calendar_that_needs_reconnect_says_so()
+    {
+        var text = BriefingMessage.Text(
+            With(reminders: [Reminder("Llamar al banco")],
+                 calendar: new BriefingCalendar.Unreadable(NeedsReconnect: true)),
+            Madrid)!;
+
+        Assert.Contains("Reconéctalo en Configuración.", text);
+    }
+
+
+    [Fact]
+    public void A_capped_event_section_states_its_total()
+    {
+        var text = BriefingMessage.Text(
+            With(events: [Event("Demo con el cliente"), Event("Retro")], eventsTotal: 7), Madrid)!;
+
+        Assert.Contains("📅 <b>Hoy en tu calendario</b> (7)", text);
+        Assert.Contains("… y 5 más", text);
+    }
+
+    [Fact]
+    public void An_events_title_is_escaped_like_everything_else()
+    {
+        var text = BriefingMessage.Text(With(events: [Event("Diseño <b>&</b> arquitectura")]), Madrid)!;
+
+        Assert.Contains("Diseño &lt;b&gt;&amp;&lt;/b&gt; arquitectura", text);
+    }
+
+    /// <summary>A day whose only entry is on the calendar is still a day with something to say.</summary>
+    [Fact]
+    public void A_day_with_only_events_is_still_a_briefing()
+        => Assert.NotNull(BriefingMessage.Text(With(events: [Event("Demo con el cliente")]), Madrid));
 
     // ---- 3.1 What it says ----
 

@@ -46,8 +46,12 @@ public interface IAiServiceClient
         string? groqModel,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Hybrid search over the user's own notes; empty when the AI service is unreachable.</summary>
-    Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Hybrid search over the user's own notes; empty when the AI service is unreachable.
+    /// <paramref name="minSimilarity"/> filters semantic hits below the threshold; words-only hits
+    /// (similarity=null) are always kept (calendar-integration design.md Decision 8).
+    /// </summary>
+    Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, double? minSimilarity = null, CancellationToken cancellationToken = default);
 
     /// <summary>Validates a Groq key and lists the chat models it can use, in one call.</summary>
     Task<LlmModelsResult> ListModelsAsync(string groqApiKey, CancellationToken cancellationToken = default);

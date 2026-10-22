@@ -33,9 +33,15 @@ public static class BriefingMessage
 
         var text = new StringBuilder("☀️ <b>Buenos días.</b> Esto es lo que tienes hoy:");
 
+        // First, and the only section tied to the clock (calendar-integration design.md Decision 6).
+        // When nothing is connected: silent. When connected but unreadable: a one-line notice so the
+        // user knows there may be events they are not seeing (specs/briefing "The calendar could not
+        // be read"). The failure itself is recorded by the reader.
+        CalendarSection(text, content.Calendar, timezone);
+
         Section(text, "⏰", "Recordatorios de hoy", content.RemindersToday, r =>
         {
-            var at = UserClock.ToLocal(r.DueAt, timezone).ToString("HH:mm", Spanish);
+            var at = Local(r.DueAt, timezone);
             // Parentheses, not another "·": the line already uses it as a bullet and as the
             // separator after the time, and a third meaning makes it unreadable.
             var note = string.IsNullOrWhiteSpace(r.NoteTitle) ? string.Empty : $" ({Escape(r.NoteTitle)})";
@@ -51,6 +57,53 @@ public static class BriefingMessage
 
         return text.ToString();
     }
+
+    /// <summary>
+    /// The calendar block: events section, one-line warning, or nothing.
+    /// <see cref="BriefingCalendar.NotConnected"/> → silent.
+    /// <see cref="BriefingCalendar.Events"/> (non-empty) → full section.
+    /// <see cref="BriefingCalendar.Unreadable"/> → a single notice line.
+    /// An empty <see cref="BriefingCalendar.Events"/> → silent (the day had no events).
+    /// </summary>
+    private static void CalendarSection(StringBuilder text, BriefingCalendar calendar, string? timezone)
+    {
+        switch (calendar)
+        {
+            case BriefingCalendar.Events e:
+                Section(text, "📅", "Hoy en tu calendario", e.Section, ev => EventLine(ev, timezone));
+                break;
+            case BriefingCalendar.Unreadable u:
+                var notice = u.NeedsReconnect
+                    ? "No se ha podido leer el calendario. Reconéctalo en Configuración."
+                    : "No se ha podido leer el calendario.";
+                text.Append($"\n\n📅 {Escape(notice)}");
+                break;
+        }
+    }
+
+    /// <summary>
+    /// An event's line: its title and the local time it runs, with the notes that relate to it
+    /// underneath, indented so they read as belonging to it rather than as events of their own.
+    /// An event lasting the whole day says so instead of naming a time it does not start at
+    /// (specs/calendar-integration "An all-day event").
+    /// </summary>
+    private static string EventLine(BriefingEvent entry, string? timezone)
+    {
+        var when = entry.Event.IsAllDay
+            ? "todo el día"
+            : $"{Local(entry.Event.StartUtc, timezone)}-{Local(entry.Event.EndUtc, timezone)}";
+
+        var line = new StringBuilder($"{when} · <b>{Escape(entry.Event.Title)}</b>");
+        foreach (var note in entry.RelatedNotes)
+        {
+            line.Append($"\n   ↳ {NoteLine(note)}");
+        }
+
+        return line.ToString();
+    }
+
+    private static string Local(DateTime utc, string? timezone)
+        => UserClock.ToLocal(utc, timezone).ToString("HH:mm", Spanish);
 
     /// <summary>
     /// A note's line. A note that rejoined the pending section after standing paused too long says

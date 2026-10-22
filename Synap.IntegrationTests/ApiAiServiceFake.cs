@@ -65,7 +65,7 @@ public sealed class ApiAiServiceFake : IAiServiceClient
             : AgentStepResult.Failed(_modelsByKey.ContainsKey(groqApiKey) ? AgentStepStatus.ToolsUnsupported : AgentStepStatus.Unavailable));
     }
 
-    public Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, double? minSimilarity = null, CancellationToken cancellationToken = default)
     {
         Searches.Add((userId, query));
         return Task.FromResult<IReadOnlyList<NoteSearchHit>>([]);

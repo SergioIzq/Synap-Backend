@@ -319,3 +319,12 @@ def test_every_action_is_named_including_reminders(reason):
     assert "Recordatorios" in text
     for action in ("create notes", "add tags", "remember facts"):
         assert action in text
+
+
+@pytest.mark.parametrize("reason", ["scope", "model"])
+def test_reading_the_calendar_is_named_too(reason):
+    """calendar-integration tarea 1.13 - sin la herramienta, el modelo no puede decir qué hay en el calendario."""
+    text = ACTIONS_UNAVAILABLE_INSTRUCTIONS[reason]
+
+    assert "read the user's calendar" in text
+    assert "never say what is or is not on it" in text

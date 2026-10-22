@@ -51,5 +51,13 @@ public enum ActionsUnavailableReason
     Model,
 }
 
-/// <summary>A note found by the AI service's hybrid search, as the `search_notes` tool shows it.</summary>
-public sealed record NoteSearchHit(Guid Id, string? Title, string Type, IReadOnlyList<string> Tags, string Snippet);
+/// <summary>
+/// A note found by the AI service's hybrid search, as the `search_notes` tool shows it.
+///
+/// <paramref name="Similarity"/> is how close in meaning the note is to the query, and is null for
+/// a note the search found by its words alone - which is not "less relevant", but relevant for
+/// another reason. Every hit has already cleared the search's own keep rule; the number is here so
+/// a caller that needs to be stricter can be (calendar-integration design.md Decision 5).
+/// </summary>
+public sealed record NoteSearchHit(
+    Guid Id, string? Title, string Type, IReadOnlyList<string> Tags, string Snippet, double? Similarity = null);

@@ -43,19 +43,21 @@ def _scope_instructions(scope: AnswerScope) -> str:
     return f"{text} {HISTORY_INSTRUCTIONS}"
 
 
-# All four actions are named, reminders included: an action left out of these texts is one the
+# Every action is named, reminders and reading the calendar included: an action left out of these texts is one the
 # model has no instruction about, so it answers about it however it likes - which is how a model
 # without actions came to promise a reminder (observable-failures task 5.5).
 ACTIONS_UNAVAILABLE_INSTRUCTIONS: dict[str, str] = {
     "scope": (
-        "In this conversation you can't create notes, add tags, remember facts or set reminders. If the user asks "
-        "for any of that, tell them to ask from the assistant's general conversation (without a note or tag "
-        "selected); memories can also be added in Settings > Memoria, and reminders in Recordatorios."
+        "In this conversation you can't create notes, add tags, remember facts, set reminders or read the user's "
+        "calendar, so never say what is or is not on it. If the user asks for any of that, tell them to ask from the "
+        "assistant's general conversation (without a note or tag selected); memories can also be added in "
+        "Settings > Memoria, and reminders in Recordatorios."
     ),
     "model": (
-        "With the model the user chose you can't create notes, add tags, remember facts or set reminders. If the "
-        "user asks for any of that, tell them that the current model can't perform actions and that they can choose "
-        "one that can in Settings; memories can also be added in Settings > Memoria, and reminders in Recordatorios."
+        "With the model the user chose you can't create notes, add tags, remember facts, set reminders or read the "
+        "user's calendar, so never say what is or is not on it. If the user asks for any of that, tell them that the "
+        "current model can't perform actions and that they can choose one that can in Settings; memories can also be "
+        "added in Settings > Memoria, and reminders in Recordatorios."
     ),
 }
 

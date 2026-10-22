@@ -149,7 +149,7 @@ internal sealed class FakeAiServiceClient : IAiServiceClient
         return Task.FromResult(Steps.Count > 0 ? Steps.Dequeue() : AgentStepResult.Failed(AgentStepStatus.Unavailable));
     }
 
-    public Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, double? minSimilarity = null, CancellationToken cancellationToken = default)
     {
         SearchCalls.Add((userId, query, limit));
         return Task.FromResult(Search(userId, query, limit));
@@ -211,4 +211,13 @@ internal sealed class RecordingLogger<T> : Microsoft.Extensions.Logging.ILogger<
         Exception? exception,
         Func<TState, Exception?, string> formatter)
         => Records.Add(formatter(state, exception));
+}
+
+/// <summary>El estado del calendario que lee Configuración; sin conexión salvo que el test diga otra cosa.</summary>
+internal sealed class FakeCalendarConnectionView : ICalendarConnectionReadRepository
+{
+    public Dictionary<Guid, CalendarConnectionSummary> Summaries { get; } = [];
+
+    public Task<CalendarConnectionSummary?> GetSummaryAsync(Guid userId, CancellationToken cancellationToken = default)
+        => Task.FromResult(Summaries.GetValueOrDefault(userId));
 }

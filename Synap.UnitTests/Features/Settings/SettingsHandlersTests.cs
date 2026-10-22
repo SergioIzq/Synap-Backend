@@ -1,3 +1,4 @@
+using Synap.Application.Features.Calendar;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Synap.Application.Features.Assistant.Agent;
@@ -44,7 +45,7 @@ public class SettingsHandlersTests
     {
         GiveUserKey();
 
-        var result = await new GetSettingsQueryHandler(_users, _context, _options).Handle(new GetSettingsQuery(), default);
+        var result = await new GetSettingsQueryHandler(_users, _context, new FakeCalendarConnectionView(), _options, Options.Create(new GoogleCalendarOptions())).Handle(new GetSettingsQuery(), default);
 
         Assert.True(result.IsSuccess);
         Assert.Equal("user@example.com", result.Value.Email);
@@ -57,7 +58,7 @@ public class SettingsHandlersTests
     [Fact]
     public async Task GetSettings_without_key()
     {
-        var result = await new GetSettingsQueryHandler(_users, _context, _options).Handle(new GetSettingsQuery(), default);
+        var result = await new GetSettingsQueryHandler(_users, _context, new FakeCalendarConnectionView(), _options, Options.Create(new GoogleCalendarOptions())).Handle(new GetSettingsQuery(), default);
 
         Assert.False(result.Value.Ai.HasGroqKey);
         Assert.Null(result.Value.Ai.GroqKeyMasked);
@@ -269,7 +270,7 @@ public class SettingsHandlersTests
             new CreateNoteCommandHandler(notes, new Assistant.FakeTagRepository(), _unitOfWork, _context, new Assistant.NoopJobQueue()),
             new AddTagCommandHandler(notes, new Assistant.FakeTagRepository(), _unitOfWork, _context),
             new AddMemoryEntryCommandHandler(memory, _unitOfWork, _context));
-        return new(_ai, _context, _users, _protector, notes, memory, new AssistantAgent(_ai, sender, new Assistant.NotesView(notes), NullLogger<AssistantAgent>.Instance));
+        return new(_ai, _context, _users, _protector, notes, memory, new AssistantAgent(_ai, sender, new Assistant.NotesView(notes), new Briefing.FakeCalendarReader(), NullLogger<AssistantAgent>.Instance));
     }
 
     [Fact]

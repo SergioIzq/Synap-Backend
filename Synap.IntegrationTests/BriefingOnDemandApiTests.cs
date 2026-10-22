@@ -15,7 +15,13 @@ public class BriefingOnDemandApiTests
 {
     private readonly ApiFixture _api;
 
-    public BriefingOnDemandApiTests(ApiFixture api) => _api = api;
+    public BriefingOnDemandApiTests(ApiFixture api)
+    {
+        _api = api;
+        // The fixture's host is shared by the whole run, and a briefing now has an event section:
+        // without this, a calendar another test left connected would be in these briefings too.
+        _api.CalendarEvents.Reset();
+    }
 
     private static string NewChatId() => Random.Shared.NextInt64(100_000_000, 999_999_999).ToString();
 

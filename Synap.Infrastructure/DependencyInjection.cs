@@ -15,8 +15,10 @@ using Synap.Infrastructure.Persistence.Data.Users;
 using Synap.Infrastructure.Services.Ai;
 using Synap.Infrastructure.Services.Auth;
 using Synap.Infrastructure.Services.Bookmarks;
+using Synap.Infrastructure.Services.Calendar;
 using Synap.Infrastructure.Services.Email;
 using Synap.Application.Features.Briefing;
+using Synap.Application.Features.Calendar;
 using Synap.Application.Features.Reminders;
 using Synap.Infrastructure.Services.Secrets;
 using Synap.Infrastructure.Services.Telegram;
@@ -61,6 +63,8 @@ public static class DependencyInjection
 
         services.AddScoped<IMemoryEntryWriteRepository, MemoryEntryWriteRepository>();
         services.AddScoped<IMemoryEntryReadRepository, MemoryEntryReadRepository>();
+        services.AddScoped<ICalendarConnectionWriteRepository, Persistence.Data.Calendar.CalendarConnectionWriteRepository>();
+        services.AddScoped<ICalendarConnectionReadRepository, Persistence.Data.Calendar.CalendarConnectionReadRepository>();
 
         services.AddScoped<IReminderWriteRepository, ReminderWriteRepository>();
         services.AddScoped<IReminderReadRepository, ReminderReadRepository>();
@@ -103,6 +107,22 @@ public static class DependencyInjection
         services.AddScoped<BriefingDeliveryService>();
         services.AddSingleton<WithheldBriefingRecorder>();
         services.AddHostedService<BriefingSweepHostedService>();
+
+        // El calendario (calendar-integration design.md Decisión 1): un puerto, un despachador y un
+        // adaptador por proveedor. Sin GoogleCalendar:ClientId solo se ofrece CalDAV.
+        services.Configure<GoogleCalendarOptions>(configuration.GetSection(GoogleCalendarOptions.SectionName));
+        services.AddSingleton<CalendarCredentialsProtector>();
+        services.AddHttpClient<GoogleCalendarClient>(client => client.Timeout = TimeSpan.FromSeconds(15));
+        // La URL CalDAV la escribe el usuario: el handler rechaza la red interna (design.md Decisión 5).
+        services.AddSingleton<CalDavNetworkGuard>();
+        services.AddHttpClient<CalDavCalendarClient>(client => client.Timeout = TimeSpan.FromSeconds(15))
+            .ConfigurePrimaryHttpMessageHandler(sp => sp.GetRequiredService<CalDavNetworkGuard>().CreateHandler());
+        services.AddTransient<ICalendarProviderClient>(sp => sp.GetRequiredService<GoogleCalendarClient>());
+        services.AddTransient<IGoogleCalendarAuthorization>(sp => sp.GetRequiredService<GoogleCalendarClient>());
+        services.AddSingleton<GoogleOAuthState>();
+        services.AddTransient<ICalendarProviderClient>(sp => sp.GetRequiredService<CalDavCalendarClient>());
+        services.AddTransient<ICalDavDiscovery>(sp => sp.GetRequiredService<CalDavCalendarClient>());
+        services.AddScoped<ICalendarReader, CalendarReader>();
 
         services.AddHttpClient<ITelegramSender, TelegramSender>(client =>
         {

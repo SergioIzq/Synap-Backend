@@ -1,5 +1,5 @@
-using Synap.Application.Features.Briefing;
 using Synap.Application.Features.Briefing.Commands;
+using Synap.Application.Features.Briefing;
 using Synap.Domain;
 using Synap.Shared.Domain.ValueObjects;
 using Synap.UnitTests.Features.Reminders;
@@ -31,7 +31,7 @@ public class BriefingOnDemandTests
 
     private SendBriefingNowCommandHandler Handler() => new(
         _users,
-        new BriefingDispatcher(new BriefingContentService(_content), _telegram),
+        new BriefingDispatcher(new BriefingContentService(_content, new FakeCalendarReader(), new FakeAiServiceClient()), _telegram),
         new FakeUserContext(_user.Id.Value));
 
     private void GiveThemSomething()

@@ -53,6 +53,10 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.TelegramChatId).HasColumnName("telegram_chat_id").HasMaxLength(20);
         builder.Property(u => u.TelegramLinkToken).HasColumnName("telegram_link_token").HasMaxLength(64);
         builder.Property(u => u.TelegramLinkTokenExpiresAt).HasColumnName("telegram_link_token_expires");
+
+        // El inicio en curso de la conexión con Google (calendar-integration design.md Decisión 3).
+        builder.Property(u => u.CalendarOAuthNonce).HasColumnName("calendar_oauth_nonce").HasMaxLength(64);
+        builder.Property(u => u.CalendarOAuthExpiresAt).HasColumnName("calendar_oauth_expires_at");
         builder.Property(u => u.Timezone).HasColumnName("timezone").HasMaxLength(64);
         builder.Ignore(u => u.HasTelegram);
 

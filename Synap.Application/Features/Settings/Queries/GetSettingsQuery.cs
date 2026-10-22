@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using SergioIzq.Application.Kernel.Interfaces;
 using SergioIzq.Application.Kernel.Messaging;
 using SergioIzq.Domain.Kernel.Abstractions.Results;
+using Synap.Application.Features.Calendar;
 using Synap.Domain;
 using Synap.Shared.Application;
 
@@ -13,13 +14,22 @@ public sealed class GetSettingsQueryHandler : IQueryHandler<GetSettingsQuery, Se
 {
     private readonly IUserWriteRepository _userWriteRepository;
     private readonly IUserContext _userContext;
+    private readonly ICalendarConnectionReadRepository _calendarConnections;
     private readonly AiOptions _aiOptions;
+    private readonly GoogleCalendarOptions _googleCalendarOptions;
 
-    public GetSettingsQueryHandler(IUserWriteRepository userWriteRepository, IUserContext userContext, IOptions<AiOptions> aiOptions)
+    public GetSettingsQueryHandler(
+        IUserWriteRepository userWriteRepository,
+        IUserContext userContext,
+        ICalendarConnectionReadRepository calendarConnections,
+        IOptions<AiOptions> aiOptions,
+        IOptions<GoogleCalendarOptions> googleCalendarOptions)
     {
         _userWriteRepository = userWriteRepository;
         _userContext = userContext;
+        _calendarConnections = calendarConnections;
         _aiOptions = aiOptions.Value;
+        _googleCalendarOptions = googleCalendarOptions.Value;
     }
 
     public async Task<Result<SettingsResponse>> Handle(GetSettingsQuery request, CancellationToken cancellationToken)
@@ -30,9 +40,12 @@ public sealed class GetSettingsQueryHandler : IQueryHandler<GetSettingsQuery, Se
             return Result.Failure<SettingsResponse>(SettingsErrors.UserNotFound);
         }
 
+        var calendar = await _calendarConnections.GetSummaryAsync(user.Id.Value, cancellationToken);
+
         return Result.Success(new SettingsResponse(
             user.Email.Value,
             AiSettingsResponse.From(user, _aiOptions.DefaultGroqModel),
-            BriefingSettingsResponse.From(user)));
+            BriefingSettingsResponse.From(user),
+            CalendarSettingsResponse.From(calendar, _googleCalendarOptions.IsAvailable)));
     }
 }

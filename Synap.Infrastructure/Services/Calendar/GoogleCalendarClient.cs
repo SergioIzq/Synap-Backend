@@ -5,30 +5,41 @@ using Synap.Domain;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace Synap.Infrastructure.Services.Calendar;
 
 /// <summary>
-/// Lee el calendario `primary` de Google con `HttpClient` directo, sin el SDK (calendar-integration
-/// design.md Decisión 3). Renueva el access token cuando le queda menos de un minuto y devuelve el
-/// nuevo para que <see cref="CalendarReader"/> lo guarde cifrado. Un `invalid_grant` o un 401 tras
-/// renovar significa que el acceso ya no vale.
+/// Lee Google Calendar con <see cref="HttpClient"/> directo, como Telegram y Groq
+/// (calendar-integration design.md Decisión 3): `events.list` sobre el calendario de la conexión
+/// con las recurrencias expandidas, y el access token renovado bajo demanda.
+///
+/// `invalid_grant` al renovar significa que el usuario revocó el acceso o que el refresh token
+/// caducó: se devuelve <see cref="CalendarReadResult.NeedsReconnect"/>. Cualquier otro fallo es
+/// temporal y no marca la conexión.
 /// </summary>
-public sealed class GoogleCalendarClient : ICalendarProviderClient
+public sealed class GoogleCalendarClient : ICalendarProviderClient, IGoogleCalendarAuthorization
 {
     public const string TokenEndpoint = "https://oauth2.googleapis.com/token";
-    public const string EventsEndpoint = "https://www.googleapis.com/calendar/v3/calendars/";
+    public const string CalendarApi = "https://www.googleapis.com/calendar/v3/";
+    public const string ConsentEndpoint = "https://accounts.google.com/o/oauth2/v2/auth";
+    public const string RevokeEndpoint = "https://oauth2.googleapis.com/revoke";
 
+    /// <summary>El mínimo que permite `events.list` sobre `primary` (design.md Decisión 3).</summary>
+    public const string Scope = "https://www.googleapis.com/auth/calendar.events.readonly";
+
+    /// <summary>Margen con el que se renueva un access token que está a punto de caducar.</summary>
     private static readonly TimeSpan RenewMargin = TimeSpan.FromMinutes(1);
+
+    /// <summary>El máximo que admite `events.list` por página; nunca se piden más.</summary>
+    private const int MaxResultsPerPage = 250;
 
     private readonly HttpClient _httpClient;
     private readonly GoogleCalendarOptions _options;
     private readonly ILogger<GoogleCalendarClient> _logger;
 
-    public GoogleCalendarClient(HttpClient httpClient, IOptions<GoogleCalendarOptions> options, ILogger<GoogleCalendarClient> logger)
+    public GoogleCalendarClient(
+        HttpClient httpClient, IOptions<GoogleCalendarOptions> options, ILogger<GoogleCalendarClient> logger)
     {
         _httpClient = httpClient;
         _options = options.Value;
@@ -37,193 +48,348 @@ public sealed class GoogleCalendarClient : ICalendarProviderClient
 
     public CalendarProvider Provider => CalendarProvider.Google;
 
-    public async Task<ProviderReadResult> ListEventsAsync(
-        string calendarRef, string credentials, DateTime fromUtc, DateTime toUtc, int maxEvents, CancellationToken cancellationToken)
+    public async Task<CalendarProviderRead> ReadAsync(CalendarProviderRequest request, CancellationToken cancellationToken)
     {
-        var stored = GoogleCredentials.Parse(credentials);
-        if (stored is null)
+        if (request.Credentials is not CalendarCredentials.Google credentials)
         {
-            return new ProviderReadResult.Rejected("credenciales de Google con formato desconocido");
+            return new CalendarProviderRead(new CalendarReadResult.Unavailable("credenciales de otro proveedor"));
         }
 
-        string? renewed = null;
+        if (!_options.IsAvailable)
+        {
+            // Un despliegue que quitó el cliente OAuth no puede leer lo conectado con él
+            // (design.md Migration Plan, paso 4): se trata como fallo temporal, no como revocación.
+            return new CalendarProviderRead(new CalendarReadResult.Unavailable("Google no configurado"));
+        }
+
         try
         {
-            if (stored.AccessToken is null || stored.AccessTokenExpiresAt - RenewMargin <= DateTime.UtcNow)
+            CalendarCredentials.Google? renewed = null;
+
+            if (NeedsRenewal(credentials))
             {
-                var refresh = await RefreshAsync(stored, cancellationToken);
-                if (refresh.Credentials is null)
+                var refreshed = await RefreshAsync(credentials, cancellationToken);
+                if (refreshed.Result is not null)
                 {
-                    return refresh.Failure!;
+                    return new CalendarProviderRead(refreshed.Result);
                 }
 
-                stored = refresh.Credentials;
-                renewed = stored.Serialize();
+                credentials = renewed = refreshed.Credentials!;
             }
 
-            var url = EventsUrl(calendarRef, fromUtc, toUtc, maxEvents);
-            using var response = await GetAsync(url, stored.AccessToken!, cancellationToken);
+            using var response = await SendListAsync(request, credentials.AccessToken!, cancellationToken);
 
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            // Un 401 con un token que creíamos vigente: se renueva una vez y se reintenta.
+            if (response.StatusCode == HttpStatusCode.Unauthorized && renewed is null)
             {
-                return new ProviderReadResult.Rejected($"Google respondió {(int)response.StatusCode} al leer eventos");
+                var refreshed = await RefreshAsync(credentials, cancellationToken);
+                if (refreshed.Result is not null)
+                {
+                    return new CalendarProviderRead(refreshed.Result);
+                }
+
+                credentials = renewed = refreshed.Credentials!;
+                using var retried = await SendListAsync(request, credentials.AccessToken!, cancellationToken);
+                return new CalendarProviderRead(await ReadEventsAsync(retried, request, cancellationToken), renewed);
             }
 
-            if (!response.IsSuccessStatusCode)
-            {
-                return new ProviderReadResult.Unavailable($"Google respondió {(int)response.StatusCode} al leer eventos");
-            }
-
-            var body = await response.Content.ReadFromJsonAsync<EventsResponse>(cancellationToken);
-            return new ProviderReadResult.Ok(ToEvents(body?.Items ?? []), renewed);
+            return new CalendarProviderRead(await ReadEventsAsync(response, request, cancellationToken), renewed);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return new ProviderReadResult.Unavailable($"Google inalcanzable ({ex.GetType().Name})");
+            return new CalendarProviderRead(new CalendarReadResult.Unavailable("Google no respondió a tiempo"));
+        }
+        catch (HttpRequestException)
+        {
+            return new CalendarProviderRead(new CalendarReadResult.Unavailable("Google inalcanzable"));
         }
         catch (JsonException)
         {
-            return new ProviderReadResult.Unavailable("respuesta de Google ilegible");
+            return new CalendarProviderRead(new CalendarReadResult.Unavailable("respuesta de Google no válida"));
         }
     }
 
-    internal static string EventsUrl(string calendarRef, DateTime fromUtc, DateTime toUtc, int maxEvents)
-        => $"{EventsEndpoint}{Uri.EscapeDataString(calendarRef)}/events"
-            + $"?timeMin={Uri.EscapeDataString(fromUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture))}"
-            + $"&timeMax={Uri.EscapeDataString(toUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture))}"
-            + $"&singleEvents=true&orderBy=startTime&maxResults={maxEvents}"
-            + "&fields=summary,items(status,summary,location,description,start,end,attendees(self,responseStatus))";
+    // ---- Autorización (design.md Decisión 3) ----
 
-    /// <summary>Descarta los cancelados y aquellos a los que el usuario dijo que no (specs/calendar-integration).</summary>
-    internal static IReadOnlyList<CalendarEvent> ToEvents(IEnumerable<GoogleEvent> items)
-        => items
-            .Where(i => i.Status != "cancelled")
-            .Where(i => i.Attendees?.Any(a => a.Self == true && a.ResponseStatus == "declined") != true)
-            .Select(ToEvent)
-            .OfType<CalendarEvent>()
-            .ToList();
-
-    private static CalendarEvent? ToEvent(GoogleEvent item)
+    public string BuildConsentUrl(string state)
     {
-        var title = string.IsNullOrWhiteSpace(item.Summary) ? "(sin título)" : item.Summary.Trim();
-
-        // Todo el día: `date` sin hora y un fin exclusivo. Se guarda la fecha tal cual para que no
-        // se mueva con la zona horaria del usuario.
-        if (item.Start?.Date is { } startDate && DateOnly.TryParse(startDate, CultureInfo.InvariantCulture, out var day))
+        var query = new Dictionary<string, string>
         {
-            var endDay = item.End?.Date is { } endDate && DateOnly.TryParse(endDate, CultureInfo.InvariantCulture, out var parsed)
-                ? parsed
-                : day.AddDays(1);
-            return new CalendarEvent(
-                title, day.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc), endDay.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),
-                day, Blank(item.Location), Blank(item.Description));
-        }
-
-        if (item.Start?.DateTime is { } start)
-        {
-            var end = item.End?.DateTime ?? start;
-            return new CalendarEvent(title, start.UtcDateTime, end.UtcDateTime, null, Blank(item.Location), Blank(item.Description));
-        }
-
-        return null;
-    }
-
-    private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-
-    private async Task<HttpResponseMessage> GetAsync(string url, string accessToken, CancellationToken cancellationToken)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        return await _httpClient.SendAsync(request, cancellationToken);
-    }
-
-    private async Task<(GoogleCredentials? Credentials, ProviderReadResult? Failure)> RefreshAsync(
-        GoogleCredentials stored, CancellationToken cancellationToken)
-    {
-        using var response = await _httpClient.PostAsync(TokenEndpoint, new FormUrlEncodedContent(new Dictionary<string, string>
-        {
-            ["grant_type"] = "refresh_token",
-            ["refresh_token"] = stored.RefreshToken,
             ["client_id"] = _options.ClientId,
-            ["client_secret"] = _options.ClientSecret,
-        }), cancellationToken);
+            ["redirect_uri"] = _options.RedirectUri,
+            ["response_type"] = "code",
+            ["scope"] = Scope,
+            // Sin estos dos, una segunda autorización no trae refresh token.
+            ["access_type"] = "offline",
+            ["prompt"] = "consent",
+            ["state"] = state,
+        };
 
-        var token = await ReadTokenAsync(response, cancellationToken);
-
-        if (response.IsSuccessStatusCode && token?.AccessToken is { Length: > 0 } accessToken)
-        {
-            return (stored with
-            {
-                AccessToken = accessToken,
-                AccessTokenExpiresAt = DateTime.UtcNow.AddSeconds(token.ExpiresIn ?? 3600),
-            }, null);
-        }
-
-        // `invalid_grant`: el usuario revocó el acceso, o el refresh token caducó (los 7 días del
-        // modo "Testing" de Google). `invalid_client` es del despliegue, no del usuario.
-        if (token?.Error == "invalid_grant")
-        {
-            return (null, new ProviderReadResult.Rejected("Google rechazó el refresh token (invalid_grant)"));
-        }
-
-        _logger.LogWarning("Google respondió {Status} al renovar el token ({Error})", (int)response.StatusCode, token?.Error);
-        return (null, new ProviderReadResult.Unavailable($"Google respondió {(int)response.StatusCode} al renovar el token"));
+        return $"{ConsentEndpoint}?{string.Join('&', query.Select(p => $"{p.Key}={Uri.EscapeDataString(p.Value)}"))}";
     }
 
-    internal static async Task<TokenResponse?> ReadTokenAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    public async Task<GoogleCalendarGrant?> ExchangeCodeAsync(string code, CancellationToken cancellationToken = default)
     {
         try
         {
-            return await response.Content.ReadFromJsonAsync<TokenResponse>(cancellationToken);
+            using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["grant_type"] = "authorization_code",
+                ["code"] = code,
+                ["client_id"] = _options.ClientId,
+                ["client_secret"] = _options.ClientSecret,
+                ["redirect_uri"] = _options.RedirectUri,
+            });
+
+            using var response = await _httpClient.PostAsync(TokenEndpoint, content, cancellationToken);
+            using var json = await ReadJsonAsync(response, cancellationToken);
+
+            if (!response.IsSuccessStatusCode || json is null)
+            {
+                _logger.LogWarning("Google rechazó el intercambio del código: HTTP {StatusCode}", (int)response.StatusCode);
+                return null;
+            }
+
+            var root = json.RootElement;
+            if (Text(root, "refresh_token") is not { Length: > 0 } refreshToken
+                || Text(root, "access_token") is not { Length: > 0 } accessToken)
+            {
+                _logger.LogWarning("Google devolvió el intercambio del código sin refresh token");
+                return null;
+            }
+
+            var expiresIn = root.TryGetProperty("expires_in", out var seconds) && seconds.TryGetInt32(out var s) ? s : 3600;
+            return new GoogleCalendarGrant(refreshToken, accessToken, DateTime.UtcNow.AddSeconds(expiresIn));
         }
-        catch (JsonException)
+        catch (Exception exception) when (exception is HttpRequestException or JsonException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
         {
+            _logger.LogWarning("No se pudo intercambiar el código con Google: {Error}", exception.GetType().Name);
             return null;
         }
     }
 
-    internal sealed record TokenResponse(
-        [property: JsonPropertyName("access_token")] string? AccessToken,
-        [property: JsonPropertyName("refresh_token")] string? RefreshToken,
-        [property: JsonPropertyName("expires_in")] int? ExpiresIn,
-        [property: JsonPropertyName("error")] string? Error);
-
-    internal sealed record EventsResponse(
-        [property: JsonPropertyName("summary")] string? Summary,
-        [property: JsonPropertyName("items")] List<GoogleEvent>? Items);
-
-    internal sealed record GoogleEvent(
-        [property: JsonPropertyName("status")] string? Status,
-        [property: JsonPropertyName("summary")] string? Summary,
-        [property: JsonPropertyName("location")] string? Location,
-        [property: JsonPropertyName("description")] string? Description,
-        [property: JsonPropertyName("start")] GoogleTime? Start,
-        [property: JsonPropertyName("end")] GoogleTime? End,
-        [property: JsonPropertyName("attendees")] List<GoogleAttendee>? Attendees);
-
-    internal sealed record GoogleTime(
-        [property: JsonPropertyName("date")] string? Date,
-        [property: JsonPropertyName("dateTime")] DateTimeOffset? DateTime);
-
-    internal sealed record GoogleAttendee(
-        [property: JsonPropertyName("self")] bool? Self,
-        [property: JsonPropertyName("responseStatus")] string? ResponseStatus);
-}
-
-/// <summary>Lo que se guarda cifrado de una conexión de Google (design.md Decisión 2).</summary>
-public sealed record GoogleCredentials(string RefreshToken, string? AccessToken, DateTime AccessTokenExpiresAt)
-{
-    public string Serialize() => JsonSerializer.Serialize(this);
-
-    public static GoogleCredentials? Parse(string json)
+    /// <summary>
+    /// La cuenta es el `summary` del calendario principal, que `events.list` devuelve con los
+    /// eventos: así basta con el scope de solo lectura de eventos.
+    /// </summary>
+    public async Task<string?> GetAccountAsync(string accessToken, CancellationToken cancellationToken = default)
     {
         try
         {
-            var parsed = JsonSerializer.Deserialize<GoogleCredentials>(json);
-            return string.IsNullOrWhiteSpace(parsed?.RefreshToken) ? null : parsed;
+            using var message = new HttpRequestMessage(
+                HttpMethod.Get, $"{CalendarApi}calendars/primary/events?maxResults=1&fields=summary");
+            message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+            using var response = await _httpClient.SendAsync(message, cancellationToken);
+            using var json = await ReadJsonAsync(response, cancellationToken);
+
+            return response.IsSuccessStatusCode && json is not null && Text(json.RootElement, "summary") is { Length: > 0 } summary
+                ? summary.Trim()
+                : null;
         }
-        catch (JsonException)
+        catch (Exception exception) when (exception is HttpRequestException or JsonException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
         {
+            _logger.LogWarning("No se pudo leer la cuenta de Google: {Error}", exception.GetType().Name);
+            return null;
+        }
+    }
+
+    public async Task<bool> RevokeAsync(string token, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var content = new FormUrlEncodedContent(new Dictionary<string, string> { ["token"] = token });
+            using var response = await _httpClient.PostAsync(RevokeEndpoint, content, cancellationToken);
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return false;
+        }
+    }
+
+    private static bool NeedsRenewal(CalendarCredentials.Google credentials) =>
+        string.IsNullOrEmpty(credentials.AccessToken)
+        || credentials.AccessTokenExpiresAt is not { } expiresAt
+        || expiresAt - DateTime.UtcNow < RenewMargin;
+
+    /// <summary>
+    /// Renueva el access token. Devuelve las credenciales nuevas, o el resultado con el que hay que
+    /// terminar la lectura si no se pudo.
+    /// </summary>
+    private async Task<(CalendarCredentials.Google? Credentials, CalendarReadResult? Result)> RefreshAsync(
+        CalendarCredentials.Google credentials, CancellationToken cancellationToken)
+    {
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"] = "refresh_token",
+            ["client_id"] = _options.ClientId,
+            ["client_secret"] = _options.ClientSecret,
+            ["refresh_token"] = credentials.RefreshToken,
+        });
+
+        using var response = await _httpClient.PostAsync(TokenEndpoint, content, cancellationToken);
+        using var json = await ReadJsonAsync(response, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = json?.RootElement.TryGetProperty("error", out var e) == true ? e.GetString() : null;
+            if (error == "invalid_grant")
+            {
+                _logger.LogWarning("Google rechazó la renovación del token: invalid_grant");
+                return (null, new CalendarReadResult.NeedsReconnect());
+            }
+
+            return (null, new CalendarReadResult.Unavailable($"renovación del token: HTTP {(int)response.StatusCode}"));
+        }
+
+        if (json is null
+            || !json.RootElement.TryGetProperty("access_token", out var token)
+            || token.GetString() is not { Length: > 0 } accessToken)
+        {
+            return (null, new CalendarReadResult.Unavailable("renovación del token sin access_token"));
+        }
+
+        var expiresIn = json.RootElement.TryGetProperty("expires_in", out var seconds) && seconds.TryGetInt32(out var s)
+            ? s
+            : 3600;
+
+        return (credentials with { AccessToken = accessToken, AccessTokenExpiresAt = DateTime.UtcNow.AddSeconds(expiresIn) }, null);
+    }
+
+    private Task<HttpResponseMessage> SendListAsync(
+        CalendarProviderRequest request, string accessToken, CancellationToken cancellationToken)
+    {
+        var query = string.Join('&', new[]
+        {
+            $"timeMin={Uri.EscapeDataString(Rfc3339(request.FromUtc))}",
+            $"timeMax={Uri.EscapeDataString(Rfc3339(request.ToUtc))}",
+            "singleEvents=true",
+            "orderBy=startTime",
+            $"maxResults={Math.Clamp(request.MaxEvents, 1, MaxResultsPerPage)}",
+        });
+
+        var message = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{CalendarApi}calendars/{Uri.EscapeDataString(request.CalendarRef)}/events?{query}");
+        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        return _httpClient.SendAsync(message, cancellationToken);
+    }
+
+    private static async Task<CalendarReadResult> ReadEventsAsync(
+        HttpResponseMessage response, CalendarProviderRequest request, CancellationToken cancellationToken)
+    {
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            // Ni con un token recién renovado: el acceso ya no vale.
+            return new CalendarReadResult.NeedsReconnect();
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return new CalendarReadResult.Unavailable($"events.list: HTTP {(int)response.StatusCode}");
+        }
+
+        using var json = await ReadJsonAsync(response, cancellationToken)
+            ?? throw new JsonException("events.list sin cuerpo");
+
+        var events = new List<CalendarEvent>();
+        if (json.RootElement.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in items.EnumerateArray())
+            {
+                if (Map(item) is { } mapped)
+                {
+                    events.Add(mapped);
+                }
+            }
+        }
+
+        return new CalendarReadResult.Ok(events.Take(request.MaxEvents).ToList());
+    }
+
+    /// <summary>
+    /// Un evento cancelado, uno que el usuario rechazó o uno sin inicio no se devuelven
+    /// (specs/calendar-integration "Evento rechazado o cancelado").
+    /// </summary>
+    internal static CalendarEvent? Map(JsonElement item)
+    {
+        if (Text(item, "status") == "cancelled" || DeclinedBySelf(item))
+        {
+            return null;
+        }
+
+        if (!item.TryGetProperty("start", out var start))
+        {
+            return null;
+        }
+
+        var title = Text(item, "summary") is { Length: > 0 } summary ? summary.Trim() : "(sin título)";
+        var location = Text(item, "location");
+        var description = Text(item, "description");
+
+        // Todo el día: Google da `date` (fin exclusivo) en lugar de `dateTime`.
+        if (Text(start, "date") is { } startDate
+            && DateOnly.TryParseExact(startDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day))
+        {
+            var days = item.TryGetProperty("end", out var endAllDay)
+                && Text(endAllDay, "date") is { } endDate
+                && DateOnly.TryParseExact(endDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var end)
+                    ? end.DayNumber - day.DayNumber
+                    : 1;
+
+            return CalendarEvent.AllDay(title, day, days, location, description);
+        }
+
+        if (Text(start, "dateTime") is not { } startText
+            || !DateTimeOffset.TryParse(startText, CultureInfo.InvariantCulture, DateTimeStyles.None, out var startAt))
+        {
+            return null;
+        }
+
+        var endAt = item.TryGetProperty("end", out var endTimed)
+            && Text(endTimed, "dateTime") is { } endText
+            && DateTimeOffset.TryParse(endText, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsedEnd)
+                ? parsedEnd
+                : startAt;
+
+        return new CalendarEvent(title, startAt.UtcDateTime, endAt.UtcDateTime, null, location, description);
+    }
+
+    private static bool DeclinedBySelf(JsonElement item) =>
+        item.TryGetProperty("attendees", out var attendees)
+        && attendees.ValueKind == JsonValueKind.Array
+        && attendees.EnumerateArray().Any(a =>
+            a.TryGetProperty("self", out var self) && self.ValueKind == JsonValueKind.True
+            && Text(a, "responseStatus") == "declined");
+
+    private static string? Text(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static string Rfc3339(DateTime utc) =>
+        DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+
+    private static async Task<JsonDocument?> ReadJsonAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonDocument.Parse(body);
+        }
+        catch (JsonException) when (!response.IsSuccessStatusCode)
+        {
+            // Una página de error HTML no es un fallo distinto del código de estado.
             return null;
         }
     }

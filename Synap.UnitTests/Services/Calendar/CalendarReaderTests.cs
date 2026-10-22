@@ -1,167 +1,166 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Synap.Application.Features.Calendar;
 using Synap.Domain;
 using Synap.Infrastructure.Services.Calendar;
-using Synap.Shared.Domain.ValueObjects.Ids;
+using Synap.Infrastructure.Services.Secrets;
 using Synap.UnitTests.Features.Settings;
+using System.Security.Cryptography;
 
 namespace Synap.UnitTests.Services.Calendar;
 
-/// <summary>calendar-integration tarea 1.3: los cuatro resultados del despachador.</summary>
+/// <summary>
+/// calendar-integration tarea 1.3: el despachador delante de los adaptadores y sus cuatro
+/// resultados (design.md Decisiones 1 y 2).
+/// </summary>
 public class CalendarReaderTests
 {
-    private static readonly DateTime From = new(2026, 10, 21, 0, 0, 0, DateTimeKind.Utc);
-    private static readonly DateTime To = From.AddDays(1);
-    private static readonly UserId User = UserId.Create(Guid.NewGuid()).Value;
+    private static readonly DateTime FromUtc = new(2026, 10, 7, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime ToUtc = new(2026, 10, 8, 0, 0, 0, DateTimeKind.Utc);
+    private const string CalendarUrl = "https://caldav.example.com/dav/calendars/sergio/default/";
 
-    private readonly FakeCalendarConnections _connections = new();
+    private readonly CalendarCredentialsProtector _protector =
+        new(new AesGcmSecretProtector(RandomNumberGenerator.GetBytes(32)));
+
+    private readonly FakeCalendarConnectionRepository _connections = new();
     private readonly FakeUnitOfWork _unitOfWork = new();
-    private readonly FakeProvider _google = new(CalendarProvider.Google);
+    private readonly FakeProviderClient _google = new(CalendarProvider.Google);
+    private readonly FakeProviderClient _calDav = new(CalendarProvider.CalDav);
+    private readonly RecordingLogger<CalendarReader> _logger = new();
 
-    private CalendarReader Reader() => new(
-        _connections, _unitOfWork, new FakeSecretProtector(), [_google], NullLogger<CalendarReader>.Instance);
+    private CalendarReader Reader() =>
+        new(_connections, _unitOfWork, _protector, [_google, _calDav], _logger);
 
-    private CalendarConnection Connect(string credentials = "enc({})")
-    {
-        var connection = CalendarConnection.Create(User, CalendarProvider.Google, "ana@example.com", "primary", credentials, From);
-        _connections.Stored = connection;
-        return connection;
-    }
-
-    private static CalendarEvent Event(string title, int hour)
-        => new(title, From.AddHours(hour), From.AddHours(hour + 1), null, null, null);
+    private CalendarConnection Connect(CalendarCredentials credentials, string? encrypted = null) =>
+        _connections.Add(CalendarConnection.Create(
+            Guid.NewGuid(),
+            credentials.Provider,
+            "sergio",
+            credentials.Provider == CalendarProvider.Google ? "primary" : CalendarUrl,
+            encrypted ?? _protector.Protect(credentials),
+            DateTime.UtcNow));
 
     [Fact]
-    public async Task Sin_conexion_es_NotConnected_y_no_llama_al_proveedor()
+    public async Task A_user_with_no_connection_is_not_connected()
     {
-        var result = await Reader().ListEventsAsync(User.Value, From, To, 10);
+        var result = await Reader().ListEventsAsync(Guid.NewGuid(), FromUtc, ToUtc, 10);
 
         Assert.IsType<CalendarReadResult.NotConnected>(result);
-        Assert.Equal(0, _google.Calls);
+        Assert.Empty(_google.Requests);
+        Assert.Empty(_calDav.Requests);
     }
 
     [Fact]
-    public async Task Los_eventos_vuelven_ordenados_y_recortados()
+    public async Task It_delegates_to_the_provider_of_the_connection_with_its_credentials()
     {
-        Connect();
-        _google.Result = new ProviderReadResult.Ok([Event("Tarde", 15), Event("Mañana", 9), Event("Mediodía", 12)]);
+        var credentials = new CalendarCredentials.CalDav("sergio", "secreto");
+        var connection = Connect(credentials);
+        var demo = new CalendarEvent("Demo", FromUtc.AddHours(9), FromUtc.AddHours(10));
+        var standup = new CalendarEvent("Standup", FromUtc.AddHours(8), FromUtc.AddHours(8.25));
+        _calDav.Responder = _ => new CalendarProviderRead(new CalendarReadResult.Ok([demo, standup]));
 
-        var result = await Reader().ListEventsAsync(User.Value, From, To, 2);
+        var result = await Reader().ListEventsAsync(connection.UserId.Value, FromUtc, ToUtc, 10);
 
         var ok = Assert.IsType<CalendarReadResult.Ok>(result);
-        Assert.Equal(["Mañana", "Mediodía"], ok.Events.Select(e => e.Title));
-        Assert.Equal(2, _google.LastMax);
+        Assert.Equal([standup, demo], ok.Events);
+        var request = Assert.Single(_calDav.Requests);
+        Assert.Equal(CalendarUrl, request.CalendarRef);
+        Assert.Equal(credentials, request.Credentials);
+        Assert.Equal((FromUtc, ToUtc, 10), (request.FromUtc, request.ToUtc, request.MaxEvents));
+        Assert.Empty(_google.Requests);
     }
 
     [Fact]
-    public async Task Un_token_renovado_se_guarda_cifrado()
+    public async Task It_returns_at_most_the_events_asked_for()
     {
-        var connection = Connect();
-        _google.Result = new ProviderReadResult.Ok([], RenewedCredentials: "{\"nuevo\":1}");
+        var connection = Connect(new CalendarCredentials.CalDav("sergio", "secreto"));
+        _calDav.Responder = _ => new CalendarProviderRead(new CalendarReadResult.Ok(
+            [.. Enumerable.Range(0, 5).Select(i => new CalendarEvent($"E{i}", FromUtc.AddHours(i), FromUtc.AddHours(i + 1)))]));
 
-        await Reader().ListEventsAsync(User.Value, From, To, 10);
+        var result = await Reader().ListEventsAsync(connection.UserId.Value, FromUtc, ToUtc, 3);
 
-        Assert.Equal("enc({\"nuevo\":1})", connection.CredentialsEncrypted);
-        Assert.Equal(1, _unitOfWork.SaveCalls);
+        Assert.Equal(3, Assert.IsType<CalendarReadResult.Ok>(result).Events.Count);
     }
 
+    /// <summary>design.md Decisión 2: si no se puede descifrar, hay que reconectar.</summary>
     [Fact]
-    public async Task Credenciales_rechazadas_marcan_la_reconexion()
+    public async Task Credentials_that_cannot_be_decrypted_need_reconnecting()
     {
-        var connection = Connect();
-        _google.Result = new ProviderReadResult.Rejected("invalid_grant");
+        var other = new CalendarCredentialsProtector(new AesGcmSecretProtector(RandomNumberGenerator.GetBytes(32)));
+        var connection = Connect(
+            new CalendarCredentials.Google("refresh"), other.Protect(new CalendarCredentials.Google("refresh")));
 
-        var result = await Reader().ListEventsAsync(User.Value, From, To, 10);
+        var result = await Reader().ListEventsAsync(connection.UserId.Value, FromUtc, ToUtc, 10);
 
         Assert.IsType<CalendarReadResult.NeedsReconnect>(result);
         Assert.True(connection.NeedsReconnect);
         Assert.Equal(1, _unitOfWork.SaveCalls);
+        Assert.Empty(_google.Requests);
     }
 
     [Fact]
-    public async Task Credenciales_que_no_se_descifran_marcan_la_reconexion()
+    public async Task A_rejection_from_the_provider_marks_the_connection()
     {
-        var connection = Connect(credentials: "basura");
+        var connection = Connect(new CalendarCredentials.Google("refresh"));
+        _google.Responder = _ => new CalendarProviderRead(new CalendarReadResult.NeedsReconnect());
 
-        var result = await Reader().ListEventsAsync(User.Value, From, To, 10);
+        var result = await Reader().ListEventsAsync(connection.UserId.Value, FromUtc, ToUtc, 10);
 
         Assert.IsType<CalendarReadResult.NeedsReconnect>(result);
-        Assert.True(connection.NeedsReconnect);
-        Assert.Equal(0, _google.Calls);
+        Assert.NotNull(connection.NeedsReconnectSince);
+        Assert.True(_logger.Mentions("reconectar"));
     }
 
     [Fact]
-    public async Task Una_conexion_ya_marcada_no_se_vuelve_a_intentar()
+    public async Task A_marked_connection_is_not_read_again()
     {
-        Connect().MarkNeedsReconnect(From);
+        var connection = Connect(new CalendarCredentials.Google("refresh"));
+        connection.MarkNeedsReconnect(DateTime.UtcNow);
 
-        var result = await Reader().ListEventsAsync(User.Value, From, To, 10);
+        var result = await Reader().ListEventsAsync(connection.UserId.Value, FromUtc, ToUtc, 10);
 
         Assert.IsType<CalendarReadResult.NeedsReconnect>(result);
-        Assert.Equal(0, _google.Calls);
+        Assert.Empty(_google.Requests);
     }
 
+    /// <summary>specs/calendar-integration "Proveedor caído": no marca la conexión.</summary>
     [Fact]
-    public async Task Un_fallo_temporal_no_marca_la_conexion()
+    public async Task An_unavailable_provider_does_not_mark_the_connection()
     {
-        var connection = Connect();
-        _google.Result = new ProviderReadResult.Unavailable("proveedor inalcanzable");
+        var connection = Connect(new CalendarCredentials.CalDav("sergio", "secreto"));
+        _calDav.Responder = _ => new CalendarProviderRead(new CalendarReadResult.Unavailable("HTTP 503"));
 
-        var result = await Reader().ListEventsAsync(User.Value, From, To, 10);
+        var result = await Reader().ListEventsAsync(connection.UserId.Value, FromUtc, ToUtc, 10);
 
-        var unavailable = Assert.IsType<CalendarReadResult.Unavailable>(result);
-        Assert.Equal("proveedor inalcanzable", unavailable.Cause);
+        Assert.Equal("HTTP 503", Assert.IsType<CalendarReadResult.Unavailable>(result).Cause);
         Assert.False(connection.NeedsReconnect);
         Assert.Equal(0, _unitOfWork.SaveCalls);
+        Assert.True(_logger.Mentions("HTTP 503"));
     }
 
     [Fact]
-    public async Task Un_intervalo_demasiado_largo_se_acota()
+    public async Task An_adapter_that_throws_is_unavailable_without_its_message_in_the_log()
     {
-        Connect();
-        _google.Result = new ProviderReadResult.Ok([]);
+        var connection = Connect(new CalendarCredentials.CalDav("sergio", "secreto"));
+        _calDav.Responder = _ => throw new InvalidOperationException("Cena con Marta en casa");
 
-        await Reader().ListEventsAsync(User.Value, From, From.AddYears(1), 10);
+        var result = await Reader().ListEventsAsync(connection.UserId.Value, FromUtc, ToUtc, 10);
 
-        Assert.Equal(From.AddDays(92), _google.LastTo);
+        Assert.IsType<CalendarReadResult.Unavailable>(result);
+        Assert.False(_logger.Mentions("Cena con Marta"));
     }
 
-    private sealed class FakeProvider(CalendarProvider provider) : ICalendarProviderClient
+    /// <summary>design.md Decisión 3: el access token renovado se guarda de nuevo cifrado.</summary>
+    [Fact]
+    public async Task Renewed_credentials_are_stored_encrypted()
     {
-        public CalendarProvider Provider { get; } = provider;
-        public ProviderReadResult Result { get; set; } = new ProviderReadResult.Ok([]);
-        public int Calls { get; private set; }
-        public int LastMax { get; private set; }
-        public DateTime LastTo { get; private set; }
+        var connection = Connect(new CalendarCredentials.Google("refresh"));
+        var renewed = new CalendarCredentials.Google("refresh", "acceso-nuevo", DateTime.UtcNow.AddHours(1));
+        _google.Responder = _ => new CalendarProviderRead(new CalendarReadResult.Ok([]), renewed);
 
-        public Task<ProviderReadResult> ListEventsAsync(
-            string calendarRef, string credentials, DateTime fromUtc, DateTime toUtc, int maxEvents, CancellationToken cancellationToken)
-        {
-            Calls++;
-            LastMax = maxEvents;
-            LastTo = toUtc;
-            return Task.FromResult(Result);
-        }
+        await Reader().ListEventsAsync(connection.UserId.Value, FromUtc, ToUtc, 10);
+
+        Assert.DoesNotContain("acceso-nuevo", connection.CredentialsEncrypted);
+        Assert.Equal(renewed, _protector.TryRead(CalendarProvider.Google, connection.CredentialsEncrypted));
+        Assert.Equal(1, _unitOfWork.SaveCalls);
     }
-}
-
-internal sealed class FakeCalendarConnections : ICalendarConnectionRepository
-{
-    public CalendarConnection? Stored { get; set; }
-
-    public Task<CalendarConnection?> GetByIdAsync(Guid id, CancellationToken cancellationToken)
-        => Task.FromResult(Stored is not null && Stored.Id.Value == id ? Stored : null);
-
-    public void Add(CalendarConnection entity) => Stored = entity;
-
-    public Task CreateAsync(CalendarConnection entity, CancellationToken cancellationToken)
-    {
-        Stored = entity;
-        return Task.CompletedTask;
-    }
-
-    public void Update(CalendarConnection entity)
-    {
-    }
-
-    public void Delete(CalendarConnection entity) => Stored = null;
 }

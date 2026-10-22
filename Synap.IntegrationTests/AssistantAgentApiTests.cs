@@ -17,7 +17,12 @@ public class AssistantAgentApiTests
 {
     private readonly ApiFixture _api;
 
-    public AssistantAgentApiTests(ApiFixture api) => _api = api;
+    public AssistantAgentApiTests(ApiFixture api)
+    {
+        _api = api;
+        // The fixture's host is shared by the whole run, so each test states what it needs.
+        _api.CalendarEvents.Reset();
+    }
 
     private async Task<(HttpClient Client, string Key, Guid UserId)> UserWithKeyAsync()
     {
@@ -227,6 +232,34 @@ public class AssistantAgentApiTests
         Assert.All(system, s => Assert.Contains("- uso Ubuntu", s));
         var memory = Assert.Single(_api.Ai.Asks, a => a.Key == key).Memory;
         Assert.Equal(["uso Ubuntu"], memory!);
+    }
+
+    // ---- El calendario (calendar-integration tarea 1.13) ----
+
+    /// <summary>
+    /// specs/ai-assistant "Qué tengo mañana" por el pipeline real: se lee el calendario de ese
+    /// usuario y la respuesta lista "Calendario consultado", sin enlace ni fuente.
+    /// </summary>
+    [Fact]
+    public async Task A_question_about_tomorrow_is_answered_from_the_calendar()
+    {
+        var (client, key, userId) = await UserWithKeyAsync();
+        var startUtc = DateTime.UtcNow.AddDays(1);
+        _api.CalendarEvents.Returns(new CalendarEvent("Demo con el cliente", startUtc, startUtc.AddHours(1)));
+        _api.Ai.ScriptSteps(key,
+            Calls(("get_calendar_events", new { range = "mañana" })),
+            Text("Mañana tienes la demo con el cliente."));
+
+        var answer = await AskAsync(client, "¿qué tengo mañana?", timezone: "Europe/Madrid");
+
+        Assert.Equal("ok", answer.GetProperty("status").GetString());
+        Assert.Equal("Mañana tienes la demo con el cliente.", answer.GetProperty("answer").GetString());
+        Assert.Equal([userId], _api.CalendarEvents.ReadFor);
+        Assert.Empty(answer.GetProperty("sources").EnumerateArray());
+        var action = Assert.Single(answer.GetProperty("actions").EnumerateArray());
+        Assert.Equal("calendarRead", action.GetProperty("type").GetString());
+        Assert.StartsWith("Calendario consultado: ", action.GetProperty("text").GetString());
+        Assert.DoesNotContain("Demo", action.GetRawText());
     }
 
     [Fact]

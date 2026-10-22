@@ -86,4 +86,7 @@ public enum AssistantActionType
     [JsonStringEnumMemberName("tagsAdded")] TagsAdded,
     [JsonStringEnumMemberName("memorySaved")] MemorySaved,
     [JsonStringEnumMemberName("reminderCreated")] ReminderCreated,
+
+    /// <summary>Lectura del calendario: solo un texto con el intervalo, sin enlace ni eventos (calendar-integration).</summary>
+    [JsonStringEnumMemberName("calendarRead")] CalendarRead,
 }

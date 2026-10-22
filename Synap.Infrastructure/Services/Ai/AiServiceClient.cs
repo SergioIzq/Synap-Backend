@@ -231,19 +231,19 @@ public sealed class AiServiceClient : IAiServiceClient
         }
     }
 
-    public async Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, double? minSimilarity = null, CancellationToken cancellationToken = default)
     {
         try
         {
             using var response = await _httpClient.PostAsJsonAsync(
-                "/internal/search", new SearchRequest(userId, query, limit), cancellationToken);
+                "/internal/search", new SearchRequest(userId, query, limit, minSimilarity), cancellationToken);
             if (!await AcceptedAsync(response, $"searching notes for user {userId}", cancellationToken))
             {
                 return [];
             }
 
             var results = await response.Content.ReadFromJsonAsync<List<SearchResultResponse>>(cancellationToken) ?? [];
-            return results.Select(r => new NoteSearchHit(r.Id, r.Title, r.Type, r.Tags, r.Snippet)).ToList();
+            return results.Select(r => new NoteSearchHit(r.Id, r.Title, r.Type, r.Tags, r.Snippet, r.Similarity)).ToList();
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
         {
@@ -358,12 +358,15 @@ public sealed class AiServiceClient : IAiServiceClient
     private sealed record SearchRequest(
         [property: JsonPropertyName("user_id")] Guid UserId,
         [property: JsonPropertyName("query")] string Query,
-        [property: JsonPropertyName("limit")] int Limit);
+        [property: JsonPropertyName("limit")] int Limit,
+        [property: JsonPropertyName("min_similarity")] double? MinSimilarity = null);
 
     private sealed record SearchResultResponse(
         [property: JsonPropertyName("id")] Guid Id,
         [property: JsonPropertyName("title")] string? Title,
         [property: JsonPropertyName("type")] string Type,
         [property: JsonPropertyName("tags")] List<string> Tags,
-        [property: JsonPropertyName("snippet")] string Snippet);
+        [property: JsonPropertyName("snippet")] string Snippet,
+        // Absent for a note found by its words alone, and absent from an older AI service.
+        [property: JsonPropertyName("similarity")] double? Similarity = null);
 }

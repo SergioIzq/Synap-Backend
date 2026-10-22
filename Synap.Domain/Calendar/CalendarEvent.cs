@@ -1,49 +1,37 @@
 namespace Synap.Domain;
 
-public enum CalendarProvider
-{
-    Google,
-    CalDav,
-}
-
 /// <summary>
-/// Un evento leído del calendario del usuario en el momento de usarlo (calendar-integration
-/// design.md Decisión 1). Nunca se persiste: existe solo mientras dura la petición que lo leyó
-/// (specs/calendar-integration "Los eventos nunca se almacenan").
+/// Un evento del calendario conectado de un usuario (calendar-integration design.md Decisión 1).
+/// Nunca se persiste: vive lo que dura la lectura que lo trajo (specs/calendar-integration "Los
+/// eventos nunca se almacenan"). Por eso no lleva identificador del proveedor.
 ///
-/// <see cref="AllDayDate"/> está solo en los eventos de todo el día, y es el día tal como está
-/// anotado: un evento del 14 de noviembre pertenece al 14 en cualquier zona horaria, así que no se
-/// deriva de <see cref="StartUtc"/>.
+/// <see cref="AllDayDate"/> tiene valor cuando el evento dura todo el día: es el día anotado en el
+/// calendario, que no debe moverse con la zona horaria del usuario. En ese caso
+/// <see cref="StartUtc"/> y <see cref="EndUtc"/> son la medianoche UTC de ese día y del siguiente,
+/// solo para poder ordenar.
 /// </summary>
 public sealed record CalendarEvent(
     string Title,
     DateTime StartUtc,
     DateTime EndUtc,
-    DateOnly? AllDayDate,
-    string? Location,
-    string? Description)
+    DateOnly? AllDayDate = null,
+    string? Location = null,
+    string? Description = null)
 {
     public bool IsAllDay => AllDayDate is not null;
+
+    /// <summary>Un evento de todo el día del <paramref name="date"/> anotado, que dura <paramref name="days"/> días.</summary>
+    public static CalendarEvent AllDay(
+        string title, DateOnly date, int days = 1, string? location = null, string? description = null)
+    {
+        var start = date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        return new CalendarEvent(title, start, start.AddDays(Math.Max(1, days)), date, location, description);
+    }
 }
 
-/// <summary>
-/// Lo que devuelve una lectura del calendario. Un tipo cerrado en vez de excepciones, para que el
-/// asistente y el briefing tengan que tratar cada caso (design.md Decisión 1).
-/// </summary>
-public abstract record CalendarReadResult
+/// <summary>De dónde viene la conexión. Solo lo conocen la conexión y el despachador de lectura.</summary>
+public enum CalendarProvider
 {
-    private CalendarReadResult()
-    {
-    }
-
-    /// <summary>El usuario no tiene ningún calendario conectado.</summary>
-    public sealed record NotConnected : CalendarReadResult;
-
-    /// <summary>El acceso se revocó, caducó o las credenciales ya no sirven: hay que reconectar.</summary>
-    public sealed record NeedsReconnect : CalendarReadResult;
-
-    /// <summary>Fallo temporal (proveedor caído, plazo superado); la conexión sigue siendo válida.</summary>
-    public sealed record Unavailable(string Cause) : CalendarReadResult;
-
-    public sealed record Ok(IReadOnlyList<CalendarEvent> Events) : CalendarReadResult;
+    Google,
+    CalDav,
 }

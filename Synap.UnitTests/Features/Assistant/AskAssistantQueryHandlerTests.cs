@@ -27,6 +27,7 @@ public class AskAssistantQueryHandlerTests
     private readonly FakeAiServiceClient _ai = new();
     private readonly FakeNoteRepository _notes = new();
     private readonly FakeMemoryRepository _memory = new();
+    private readonly Briefing.FakeCalendarReader _calendar = new();
     private readonly User _user = UserGroqSettingsTests.NewUser();
 
     public AskAssistantQueryHandlerTests()
@@ -44,7 +45,7 @@ public class AskAssistantQueryHandlerTests
             new CreateNoteCommandHandler(_notes, tags, unitOfWork, context, new NoopJobQueue()),
             new AddTagCommandHandler(_notes, tags, unitOfWork, context),
             new AddMemoryEntryCommandHandler(_memory, unitOfWork, context));
-        var agent = new AssistantAgent(_ai, sender, new NotesView(_notes), NullLogger<AssistantAgent>.Instance);
+        var agent = new AssistantAgent(_ai, sender, new NotesView(_notes), _calendar, NullLogger<AssistantAgent>.Instance);
         return new(_ai, context, _users, _protector, _notes, _memory, agent);
     }
 
@@ -144,6 +145,22 @@ public class AskAssistantQueryHandlerTests
         Assert.Equal(["prefiero respuestas cortas"], Assert.Single(_ai.AskMemories)!);
         Assert.Equal(ActionsUnavailableReason.Scope, Assert.Single(_ai.AskActionsUnavailable));
         Assert.Empty(_ai.StepCalls);
+    }
+
+    /// <summary>
+    /// calendar-integration task 6.4 - specs/ai-assistant "No actions in a scoped conversation":
+    /// the calendar is read through a tool, and a scoped conversation is never offered any, so it
+    /// never reaches the calendar either.
+    /// </summary>
+    [Fact]
+    public async Task A_scoped_question_is_never_offered_the_calendar_tool_and_reads_no_calendar()
+    {
+        await Handler().Handle(new AskAssistantQuery("¿qué tengo mañana?", new AssistantScope(null, "docker")), default);
+
+        // No tool loop at all: no step was made, so no tool list was ever composed.
+        Assert.Empty(_ai.StepCalls);
+        Assert.Empty(_calendar.Reads);
+        Assert.Equal(ActionsUnavailableReason.Scope, Assert.Single(_ai.AskActionsUnavailable));
     }
 
     [Fact]

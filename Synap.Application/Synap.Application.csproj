@@ -9,6 +9,13 @@
     <PackageReference Include="SergioIzq.Application.Kernel" Version="0.2.6" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The agent's tools and system prompt are internal on purpose - nothing outside the agent
+         composes them - and are exactly what some promises are about, so the unit tests see them
+         rather than the public API being widened to let them. -->
+    <InternalsVisibleTo Include="Synap.UnitTests" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

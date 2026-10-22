@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Synap.Api.Telegram;
 using Synap.Shared.Application.Interfaces;
+using Synap.Application.Features.Calendar;
 using Npgsql;
 using System.Net;
 using System.Net.Http.Headers;
@@ -55,6 +56,21 @@ public sealed class ApiFixture : IAsyncLifetime
     /// <summary>The webhook secret the test host is configured with (assistant-reminders).</summary>
     public const string TelegramWebhookSecret = "test-webhook-secret";
 
+    /// <summary>
+    /// Stands in for reading a connected calendar. No calendar connected unless a test says
+    /// otherwise, so nothing in the pipeline reaches a real server.
+    /// </summary>
+    public CalendarReaderFake CalendarEvents { get; } = new();
+
+    /// <summary>Hace de Google en el flujo OAuth (calendar-integration tarea 1.9).</summary>
+    public ApiGoogleCalendarFake GoogleCalendar { get; } = new();
+
+    /// <summary>Hace de servidor CalDAV al conectar (calendar-integration tarea 1.10).</summary>
+    public ApiCalDavDiscoveryFake CalDav { get; } = new();
+
+    /// <summary>La URL de la web por defecto (AppOptions), a la que vuelve el usuario desde Google.</summary>
+    public const string PublicBaseUrl = "http://localhost:4200";
+
     /// <summary>Everything the API logged, so tests can assert on records the response hides.</summary>
     public RecordingLogSink Logs { get; } = new();
 
@@ -74,6 +90,10 @@ public sealed class ApiFixture : IAsyncLifetime
             builder.UseSetting("Telegram:BotToken", "test-bot-token");
             builder.UseSetting("Telegram:WebhookSecret", TelegramWebhookSecret);
             builder.UseSetting("Telegram:BotUsername", "SynapTestBot");
+            // Google Calendar disponible, pero sobre el fake de abajo: nada sale hacia Google.
+            builder.UseSetting("GoogleCalendar:ClientId", "test-client-id");
+            builder.UseSetting("GoogleCalendar:ClientSecret", "test-client-secret");
+            builder.UseSetting("GoogleCalendar:RedirectUri", "https://api.synap.test/api/calendar/google/callback");
             builder.ConfigureServices(services => services.AddSingleton<IStartupFilter, FakeRemoteIpStartupFilter>());
             builder.ConfigureTestServices(services =>
             {
@@ -83,6 +103,12 @@ public sealed class ApiFixture : IAsyncLifetime
                 services.AddSingleton<IAiServiceClient>(Ai);
                 services.RemoveAll<ITelegramSender>();
                 services.AddSingleton<ITelegramSender>(Telegram);
+                services.RemoveAll<ICalendarReader>();
+                services.AddSingleton<ICalendarReader>(CalendarEvents);
+                services.RemoveAll<IGoogleCalendarAuthorization>();
+                services.AddSingleton<IGoogleCalendarAuthorization>(GoogleCalendar);
+                services.RemoveAll<ICalDavDiscovery>();
+                services.AddSingleton<ICalDavDiscovery>(CalDav);
                 // No suppression window: the host is shared by the whole run, so a rejection
                 // recorded by one test would hide the next one's.
                 services.RemoveAll<WebhookRejectionRecorder>();
@@ -114,6 +140,15 @@ public sealed class ApiFixture : IAsyncLifetime
         var client = _factory.CreateClient();
         var n = Interlocked.Increment(ref _nextClientIp);
         client.DefaultRequestHeaders.Add(RemoteIpHeader, remoteIp ?? $"10.200.{n / 250}.{n % 250 + 1}");
+        return client;
+    }
+
+    /// <summary>Un cliente que no sigue redirecciones, para ver adónde manda la API.</summary>
+    public HttpClient CreateClientWithoutRedirects()
+    {
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        var n = Interlocked.Increment(ref _nextClientIp);
+        client.DefaultRequestHeaders.Add(RemoteIpHeader, $"10.201.{n / 250}.{n % 250 + 1}");
         return client;
     }
 

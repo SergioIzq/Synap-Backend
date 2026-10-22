@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using SergioIzq.AspNetCore.Kernel.Controllers;
 using Synap.Application.Features.Reminders.Commands;
 using Synap.Application.Features.Briefing.Commands;
+using Synap.Application.Features.Calendar.Commands;
 using Synap.Application.Features.Settings.Commands;
 using Synap.Application.Features.Settings.Queries;
 
@@ -77,7 +78,26 @@ public class SettingsController : AbsController
     public async Task<IActionResult> DisconnectTelegram()
         => await SendAndHandleAsync(new DisconnectTelegramCommand());
 
+    // ---- El calendario (specs/calendar-integration) ----
+
+    /// <summary>Empieza la conexión con Google: devuelve la URL de consentimiento.</summary>
+    [HttpPost("calendar/google/start")]
+    public async Task<IActionResult> StartGoogleCalendar()
+        => await SendAndHandleAsync(new StartGoogleCalendarCommand());
+
+    /// <summary>Conecta un CalDAV tras comprobarlo contra el servidor; un fallo conserva la conexión anterior.</summary>
+    [HttpPut("calendar/caldav")]
+    public async Task<IActionResult> ConnectCalDavCalendar([FromBody] ConnectCalDavRequest request)
+        => await SendAndHandleAsync(new ConnectCalDavCalendarCommand(request.Url, request.Username, request.Password));
+
+    /// <summary>Borra la conexión; en Google, además pide la revocación sin depender de ella.</summary>
+    [HttpDelete("calendar")]
+    public async Task<IActionResult> DisconnectCalendar()
+        => await SendAndHandleAsync(new DisconnectCalendarCommand());
+
     public sealed record SaveGroqKeyRequest(string ApiKey);
+
+    public sealed record ConnectCalDavRequest(string? Url, string? Username, string? Password);
 
     public sealed record SetModelRequest(string? Model);
 

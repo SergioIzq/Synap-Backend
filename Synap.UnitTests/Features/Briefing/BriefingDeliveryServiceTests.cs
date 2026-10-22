@@ -2,8 +2,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Synap.Application.Features.Briefing;
 using Synap.Application.Features.Reminders;
 using Synap.Domain;
-using Synap.Shared.Domain.ValueObjects;
 using Synap.Shared.Domain.ValueObjects.Ids;
+using Synap.Shared.Domain.ValueObjects;
 using Synap.UnitTests.Features.Reminders;
 using Synap.UnitTests.Features.Settings;
 
@@ -31,7 +31,7 @@ public class BriefingDeliveryServiceTests
 
     private BriefingDeliveryService Service() => new(
         _users,
-        new BriefingDispatcher(new BriefingContentService(_content), _telegram),
+        new BriefingDispatcher(new BriefingContentService(_content, new FakeCalendarReader(), new FakeAiServiceClient()), _telegram),
         _telegram,
         _unitOfWork,
         _withheld,

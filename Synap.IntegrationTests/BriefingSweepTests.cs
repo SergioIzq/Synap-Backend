@@ -15,6 +15,7 @@ using Synap.Infrastructure.Persistence.Command;
 using Synap.Infrastructure.Persistence.Data.Briefing;
 using Synap.Infrastructure.Persistence.Data.Users;
 using Synap.Shared.Application.Interfaces;
+using Synap.Application.Features.Calendar;
 using Synap.Shared.Domain.ValueObjects;
 using Xunit;
 
@@ -36,7 +37,8 @@ public class BriefingSweepTests
     public BriefingSweepTests(PostgresFixture fixture) => _fixture = fixture;
 
     private async Task<(User User, ServiceProvider Services, CapturingSender Telegram)> ArrangeAsync(
-        bool telegramEnabled = true, int hour = 0, bool linkChat = true, bool enableBriefing = true)
+        bool telegramEnabled = true, int hour = 0, bool linkChat = true, bool enableBriefing = true,
+        CalendarReaderFake? calendar = null)
     {
         await using var seed = _fixture.CreateContext();
 
@@ -72,6 +74,10 @@ public class BriefingSweepTests
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<IUserWriteRepository, UserWriteRepository>();
         services.AddScoped<IBriefingReadRepository>(_ => new BriefingReadRepository(new TestDbConnectionFactory(_fixture.ConnectionString)));
+        // No calendar connected unless a test says otherwise, and an AI service that finds nothing:
+        // what the briefing was before calendar-integration (task 5.6).
+        services.AddSingleton<ICalendarReader>(calendar ?? new CalendarReaderFake());
+        services.AddSingleton<IAiServiceClient>(new ApiAiServiceFake());
         services.AddScoped<BriefingContentService>();
         services.AddScoped<BriefingDispatcher>();
         services.AddScoped<BriefingDeliveryService>();
@@ -168,6 +174,120 @@ public class BriefingSweepTests
 
         await using var context = _fixture.CreateContext();
         Assert.Null((await context.Set<User>().FirstAsync(u => u.Id == user.Id)).BriefingLastResolvedOn);
+    }
+
+    // ---- The calendar (calendar-integration tasks 5.5 and 5.6) ----
+
+    /// <summary>
+    /// specs/calendar-integration "A calendar that cannot be read degrades rather than breaks" and
+    /// specs/briefing "The calendar could not be read": the briefing arrives with everything else
+    /// it has, and says nothing at all about the calendar - least of all that the day is free.
+    /// </summary>
+    [Fact]
+    public async Task A_calendar_that_cannot_be_read_still_delivers_the_whole_briefing()
+    {
+        var calendar = new CalendarReaderFake();
+        calendar.Unavailable();
+        var (user, services, telegram) = await ArrangeAsync(calendar: calendar);
+
+        Assert.Equal(1, await SweepAsync(services));
+
+        var sent = Assert.Single(telegram.Snapshot());
+        Assert.Equal(ChatId, sent.ChatId);
+        // The rest of the briefing is delivered.
+        Assert.Contains("Sin etiquetar", sent.Text);
+        // The unavailable calendar adds a one-line notice, not a full events section.
+        Assert.Contains("📅 No se ha podido leer el calendario.", sent.Text);
+        Assert.DoesNotContain("<b>Hoy en tu calendario</b>", sent.Text);
+        // The day is resolved: a calendar failure does not cost the user their briefing.
+        await using var context = _fixture.CreateContext();
+        Assert.NotNull((await context.Set<User>().FirstAsync(u => u.Id == user.Id)).BriefingLastResolvedOn);
+    }
+
+    /// <summary>
+    /// specs/briefing "Sin calendario conectado" - calendar-integration task 1.18.
+    /// A user whose calendar is NotConnected receives no calendar section and no notice at all:
+    /// silence is the right answer when the user never set one up.
+    /// </summary>
+    [Fact]
+    public async Task A_user_with_no_calendar_gets_no_calendar_notice_at_all()
+    {
+        var calendar = new CalendarReaderFake(); // NotConnected by default
+        var (_, services, telegram) = await ArrangeAsync(calendar: calendar);
+
+        Assert.Equal(1, await SweepAsync(services));
+
+        var sent = Assert.Single(telegram.Snapshot());
+        Assert.DoesNotContain("📅", sent.Text);
+        Assert.DoesNotContain("calendario", sent.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// task 5.6 - a user with no connected calendar gets exactly the briefing they got before this
+    /// change: no event section, and nothing searched on their behalf.
+    /// </summary>
+    [Fact]
+    public async Task A_user_with_no_connected_calendar_gets_the_briefing_they_got_before()
+    {
+        var calendar = new CalendarReaderFake();
+        var (user, services, telegram) = await ArrangeAsync(calendar: calendar);
+
+        Assert.Equal(1, await SweepAsync(services));
+
+        var sent = Assert.Single(telegram.Snapshot());
+        Assert.Contains("Buenos días", sent.Text);
+        Assert.Contains("Sin etiquetar", sent.Text);
+        Assert.DoesNotContain("📅", sent.Text);
+        // Read for that user and nobody else, and only once.
+        Assert.Equal([user.Id.Value], calendar.ReadFor);
+    }
+
+    /// <summary>
+    /// calendar-integration task 1.18 - a calendar that fails for user A must not prevent the
+    /// briefing for user B. Each user's calendar is read independently.
+    /// </summary>
+    [Fact]
+    public async Task A_failing_calendar_for_one_user_does_not_prevent_the_briefing_for_another()
+    {
+        // The fake fails for every user – simulates a provider that is down for all.
+        // The important thing: both users still receive their briefing.
+        var calendar = new CalendarReaderFake();
+        calendar.Unavailable();
+        var (userA, servicesA, telegramA) = await ArrangeAsync(calendar: calendar);
+
+        // Create a second briefing-enabled user in the same database.
+        await using var seed = _fixture.CreateContext();
+        var userB = User.Create(Email.CreateFromDatabase($"{Guid.NewGuid():N}@b.example.com"), PasswordHash.CreateFromDatabase("hash"));
+        userB.SetTimezone(Madrid);
+        userB.CompleteTelegramLink($"{ChatId}_b");
+        userB.SetBriefing(enabled: true, hour: 0);
+        seed.Add(userB);
+        seed.Add(Note.Create(userB.Id, NoteType.Text, "Nota de B", "algo de B"));
+        await seed.SaveChangesAsync();
+
+        Assert.Equal(2, await SweepAsync(servicesA));
+
+        var messages = telegramA.Snapshot();
+        Assert.Equal(2, messages.Count);
+        Assert.True(messages.All(m => m.Text.Contains("No se ha podido leer el calendario.")));
+        Assert.True(messages.All(m => m.Text.Contains("Buenos días")));
+    }
+
+    /// <summary>The events of the day, when there are any, lead the briefing.</summary>
+    [Fact]
+    public async Task A_connected_calendar_puts_the_day_at_the_top_of_the_briefing()
+    {
+        var calendar = new CalendarReaderFake();
+        var startUtc = DateTime.UtcNow;
+        calendar.Returns(new CalendarEvent("Demo con el cliente", startUtc, startUtc.AddHours(1)));
+        var (_, services, telegram) = await ArrangeAsync(calendar: calendar);
+
+        Assert.Equal(1, await SweepAsync(services));
+
+        var text = Assert.Single(telegram.Snapshot()).Text;
+        Assert.Contains("Demo con el cliente", text);
+        Assert.True(
+            text.IndexOf("📅", StringComparison.Ordinal) < text.IndexOf("📌", StringComparison.Ordinal), text);
     }
 
     // ---- 4.6 The hosted service ----

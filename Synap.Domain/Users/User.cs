@@ -63,9 +63,9 @@ public sealed class User : AbsEntity<UserId>
 
     public bool HasTelegram => TelegramChatId is not null;
 
-    // Inicio en curso de la conexión con Google Calendar (calendar-integration design.md Decisión
-    // 3): el nonce que va cifrado en el `state` de OAuth. Un solo uso y uno por usuario, como el
-    // código de Telegram.
+    // El inicio en curso de la conexión con Google (calendar-integration design.md Decisión 3):
+    // un nonce de un solo uso y su caducidad, con el mismo patrón que TelegramLinkToken. La
+    // conexión en sí vive en CalendarConnection.
     public string? CalendarOAuthNonce { get; private set; }
     public DateTime? CalendarOAuthExpiresAt { get; private set; }
 
@@ -264,7 +264,7 @@ public sealed class User : AbsEntity<UserId>
         ClearTelegramLink();
     }
 
-    /// <summary>Sustituye cualquier inicio anterior: solo vale el último consentimiento pedido.</summary>
+    /// <summary>Empieza una conexión con Google; sustituye cualquier inicio anterior.</summary>
     public void StartCalendarOAuth(string nonce, DateTime expiresAtUtc)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(nonce);
@@ -274,14 +274,15 @@ public sealed class User : AbsEntity<UserId>
     }
 
     /// <summary>
-    /// True si el nonce es el vigente de este usuario. Lo borra siempre que hay uno, coincida o no:
-    /// una respuesta de Google se acepta una sola vez (specs/calendar-integration "Respuesta de
-    /// Google ajena o caducada").
+    /// Consume el nonce: true solo si coincide con el inicio en curso y no ha caducado. Tanto si
+    /// coincide como si no, el inicio en curso deja de servir, para que una respuesta capturada no
+    /// se pueda repetir.
     /// </summary>
     public bool ConsumeCalendarOAuth(string? nonce, DateTime nowUtc)
     {
         var valid = CalendarOAuthNonce is not null
-            && CalendarOAuthExpiresAt is { } expiresAt && nowUtc <= expiresAt
+            && CalendarOAuthExpiresAt is { } expiresAt
+            && nowUtc <= expiresAt
             && string.Equals(CalendarOAuthNonce, nonce, StringComparison.Ordinal);
 
         CalendarOAuthNonce = null;

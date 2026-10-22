@@ -1,32 +1,33 @@
+using Synap.Application.Features.Calendar;
 using Synap.Domain;
 
 namespace Synap.Infrastructure.Services.Calendar;
 
 /// <summary>
-/// Un adaptador de proveedor (Google o CalDAV). Recibe las credenciales ya descifradas, en el
-/// formato JSON que él mismo define, y nunca toca la base de datos: de eso se encarga
-/// <see cref="CalendarReader"/>.
+/// Un adaptador de lectura por proveedor (calendar-integration design.md Decisión 1). Solo lo usa
+/// <see cref="CalendarReader"/>, que es quien carga, descifra y guarda.
 /// </summary>
 public interface ICalendarProviderClient
 {
     CalendarProvider Provider { get; }
 
-    Task<ProviderReadResult> ListEventsAsync(
-        string calendarRef, string credentials, DateTime fromUtc, DateTime toUtc, int maxEvents, CancellationToken cancellationToken);
+    /// <summary>
+    /// Lee el intervalo. Nunca lanza por un fallo del proveedor: lo devuelve como
+    /// <see cref="CalendarReadResult.NeedsReconnect"/> o <see cref="CalendarReadResult.Unavailable"/>.
+    /// </summary>
+    Task<CalendarProviderRead> ReadAsync(CalendarProviderRequest request, CancellationToken cancellationToken);
 }
 
-public abstract record ProviderReadResult
-{
-    private ProviderReadResult()
-    {
-    }
+public sealed record CalendarProviderRequest(
+    Guid UserId,
+    string CalendarRef,
+    CalendarCredentials Credentials,
+    DateTime FromUtc,
+    DateTime ToUtc,
+    int MaxEvents);
 
-    /// <summary><paramref name="RenewedCredentials"/> viene cuando el adaptador renovó un token y hay que guardarlo.</summary>
-    public sealed record Ok(IReadOnlyList<CalendarEvent> Events, string? RenewedCredentials = null) : ProviderReadResult;
-
-    /// <summary>El proveedor rechazó las credenciales: acceso revocado, caducado o contraseña cambiada.</summary>
-    public sealed record Rejected(string Cause) : ProviderReadResult;
-
-    /// <summary>Fallo temporal: no se marca la conexión.</summary>
-    public sealed record Unavailable(string Cause) : ProviderReadResult;
-}
+/// <summary>
+/// El resultado y, si el adaptador renovó algo (el access token de Google), las credenciales
+/// nuevas para que el despachador las guarde cifradas.
+/// </summary>
+public sealed record CalendarProviderRead(CalendarReadResult Result, CalendarCredentials? RenewedCredentials = null);

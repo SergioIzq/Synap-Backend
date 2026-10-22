@@ -57,7 +57,10 @@ public class GroqKeyIsolationTests
             Assert.NotNull(stored.GroqApiKeyEncrypted);
             Assert.DoesNotContain(UserAKey, stored.GroqApiKeyEncrypted);
 
-            var settingsB = await new GetSettingsQueryHandler(new UserWriteRepository(context), new StaticUserContext(userB), _options)
+            var settingsB = await new GetSettingsQueryHandler(
+                    new UserWriteRepository(context), new StaticUserContext(userB),
+                    new Synap.Infrastructure.Persistence.Data.Calendar.CalendarConnectionReadRepository(context),
+                    _options, Microsoft.Extensions.Options.Options.Create(new Synap.Application.Features.Calendar.GoogleCalendarOptions()))
                 .Handle(new GetSettingsQuery(), default);
             Assert.False(settingsB.Value.Ai.HasGroqKey);
             Assert.Null(settingsB.Value.Ai.GroqKeyMasked);
@@ -127,7 +130,7 @@ public class GroqKeyIsolationTests
             _protector,
             new NoteWriteRepository(context),
             new MemoryEntryReadRepository(context),
-            new AssistantAgent(ai, new UnusedSender(), new NoteReadRepository(new TestDbConnectionFactory(_fixture.ConnectionString)), Microsoft.Extensions.Logging.Abstractions.NullLogger<AssistantAgent>.Instance));
+            new AssistantAgent(ai, new UnusedSender(), new NoteReadRepository(new TestDbConnectionFactory(_fixture.ConnectionString)), new CalendarReaderFake(), Microsoft.Extensions.Logging.Abstractions.NullLogger<AssistantAgent>.Instance));
 
     private sealed class UnusedSender : MediatR.ISender
     {
@@ -207,7 +210,7 @@ public class GroqKeyIsolationTests
             return Task.FromResult(Steps.Count > 0 ? Steps.Dequeue() : AgentStepResult.Failed(AgentStepStatus.ToolsUnsupported));
         }
 
-        public Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, CancellationToken cancellationToken = default)
+        public Task<IReadOnlyList<NoteSearchHit>> SearchAsync(Guid userId, string query, int limit, double? minSimilarity = null, CancellationToken cancellationToken = default)
         {
             SearchUserIds.Add(userId);
             return Task.FromResult<IReadOnlyList<NoteSearchHit>>([]);

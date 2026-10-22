@@ -76,6 +76,25 @@ public static class ReminderWording
         return utc;
     }
 
+    /// <summary>
+    /// Solo el día que nombra la expresión (hoy, mañana, pasado mañana, un día de la semana o una
+    /// fecha), sin hora; null si no nombra un día. Se resuelve desde el principio de
+    /// <paramref name="localToday"/>, así que el día de la semana de hoy es hoy. Lo usa
+    /// <see cref="CalendarRangeWording"/> para no tener dos maneras de entender un día.
+    /// </summary>
+    public static DateOnly? ResolveDay(string? wording, DateTime localToday)
+    {
+        if (string.IsNullOrWhiteSpace(wording))
+        {
+            return null;
+        }
+
+        var text = Normalize(wording);
+        var midnight = localToday.Date;
+        var local = ResolveNamedDay(text, midnight) ?? ResolveWeekday(text, midnight) ?? ResolveCalendarDate(text, midnight);
+        return local is { } day ? DateOnly.FromDateTime(day) : null;
+    }
+
     private static DateTime? ResolveLocal(string text, DateTime localNow)
         => ResolveIn(text, localNow)
            ?? ResolveNamedDay(text, localNow)
@@ -263,7 +282,7 @@ public static class ReminderWording
         return new TimeSpan(hour, minute, 0);
     }
 
-    private static int? Amount(string value)
+    internal static int? Amount(string value)
         => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number)
             ? number
             : SpelledNumbers.TryGetValue(value, out var spelled) ? spelled : null;
@@ -289,7 +308,7 @@ public static class ReminderWording
     /// "El Viernes", "el viernes" and "viernes" are one thing. Accents go because the model's
     /// spelling of "miércoles" cannot be relied on.
     /// </summary>
-    private static string Normalize(string wording)
+    internal static string Normalize(string wording)
     {
         var lowered = wording.Trim().ToLowerInvariant();
         var stripped = new StringBuilder(lowered.Length);

@@ -1,10 +1,11 @@
 name: CI
 
-# test: en pull requests y en push a main. publish y deploy: solo en push a main.
+# develop es la rama de integración y main la de producción (solo recibe la PR develop → main).
+# test: en pull requests a develop y a main, y en push a main. publish, deploy y tag: solo en push a main.
 # workflow_dispatch con `sha` ejecuta únicamente deploy (rollback o redeploy de un commit ya publicado).
 on:
   pull_request:
-    branches: [main]
+    branches: [main, develop]
   push:
     branches: [main]
   workflow_dispatch:
@@ -132,3 +133,49 @@ jobs:
           printf '%s\n' "$VPS_HOST_KEY" > ~/.ssh/known_hosts
           ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             "$VPS_USER@$VPS_HOST" "synap-api synap-ai $SHA"
+
+  # Versión de producción: solo tras un deploy correcto de un push a main (nunca en workflow_dispatch).
+  tag:
+    needs: deploy
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.deploy.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # historial y tags completos para calcular la versión
+
+      # vMAJOR.MINOR.PATCH: sube el patch del mayor tag existente (v1.0.0 si no hay ninguno).
+      # Minor y major se suben creando el tag a mano; la siguiente versión parte de él.
+      - name: Crear el tag de versión
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          semver='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          for intento in 1 2 3; do
+            actual=$(git tag --points-at "$GITHUB_SHA" | grep -E "$semver" | head -1 || true)
+            if [ -n "$actual" ]; then
+              echo "El commit ya tiene la versión $actual; no se crea otra."
+              exit 0
+            fi
+            ultima=$(git tag -l 'v*' --sort=-v:refname | grep -E "$semver" | head -1 || true)
+            if [ -z "$ultima" ]; then
+              version=v1.0.0
+            else
+              IFS=. read -r mayor menor parche <<< "${ultima#v}"
+              version="v$mayor.$menor.$((parche + 1))"
+            fi
+            git tag -a "$version" "$GITHUB_SHA" -m "$version ($GITHUB_WORKFLOW, $GITHUB_SHA)"
+            if git push origin "refs/tags/$version"; then
+              echo "Creada la versión $version."
+              exit 0
+            fi
+            # Otra ejecución publicó esa versión antes: se recalcula con los tags del remoto.
+            echo "::warning::$version ya existe en el remoto; se recalcula (intento $intento)."
+            git tag -d "$version"
+            git fetch --tags --force origin
+          done
+          echo "::error::No se pudo crear la versión tras 3 intentos."
+          exit 1

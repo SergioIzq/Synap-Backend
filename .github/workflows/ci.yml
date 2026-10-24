@@ -1,0 +1,134 @@
+name: CI
+
+# test: en pull requests y en push a main. publish y deploy: solo en push a main.
+# workflow_dispatch con `sha` ejecuta únicamente deploy (rollback o redeploy de un commit ya publicado).
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: SHA completo (40 caracteres) del commit cuyas imágenes se despliegan
+        required: true
+        type: string
+
+# Permisos mínimos por defecto; cada trabajo que necesite más los declara.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Compilar la solución
+        run: dotnet build Synap.slnx -v q -nologo
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ai-service/requirements*.txt
+
+      - name: Instalar dependencias del servicio de IA
+        working-directory: ai-service
+        run: pip install -r requirements-dev.txt
+
+      # Solo las pruebas sin red ni base de datos (mismos ficheros que `build` en workspace.yaml).
+      - name: Pruebas del servicio de IA
+        working-directory: ai-service
+        run: python -m pytest -q tests/test_groq_provider.py tests/test_assistant_api.py
+
+  publish:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publicar synap-api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/sergioizq/synap-api:${{ github.sha }}
+            ghcr.io/sergioizq/synap-api:latest
+          cache-from: type=gha,scope=synap-api
+          cache-to: type=gha,mode=max,scope=synap-api
+
+      - name: Publicar synap-ai
+        uses: docker/build-push-action@v6
+        with:
+          context: ai-service
+          push: true
+          tags: |
+            ghcr.io/sergioizq/synap-ai:${{ github.sha }}
+            ghcr.io/sergioizq/synap-ai:latest
+          cache-from: type=gha,scope=synap-ai
+          cache-to: type=gha,mode=max,scope=synap-ai
+
+  deploy:
+    needs: publish
+    # Los trabajos anteriores se omiten en workflow_dispatch; !cancelled() deja que este corra igualmente.
+    if: >-
+      ${{ !cancelled() && (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'push' && needs.publish.result == 'success')
+      ) }}
+    runs-on: ubuntu-latest
+    environment: production
+    # Un despliegue cada vez y sin cancelar el que está en curso.
+    concurrency:
+      group: deploy-production-back
+      cancel-in-progress: false
+    steps:
+      - name: Resolver el SHA a desplegar
+        id: sha
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_SHA: ${{ inputs.sha }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          sha="$PUSH_SHA"
+          [ "$EVENT" = workflow_dispatch ] && sha="$INPUT_SHA"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::El SHA debe tener 40 caracteres hexadecimales en minúscula"
+            exit 1
+          fi
+          echo "value=$sha" >> "$GITHUB_OUTPUT"
+
+      # La clave de CI solo puede ejecutar scripts/deploy.sh en el VPS (command= en authorized_keys).
+      # VPS_HOST_KEY es la línea de known_hosts del servidor (salida de `ssh-keyscan -t ed25519 <host>`).
+      - name: Desplegar synap-api y synap-ai
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
+          SHA: ${{ steps.sha.outputs.value }}
+        run: |
+          install -m 700 -d ~/.ssh
+          (umask 077; printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_deploy)
+          printf '%s\n' "$VPS_HOST_KEY" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" "synap-api synap-ai $SHA"

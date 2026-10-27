@@ -20,4 +20,20 @@ public sealed class NoteWriteRepository : AbsWriteRepository<Note, NoteId>, INot
             .Include(n => n.Tags)
             .FirstOrDefaultAsync(n => n.Id == id && n.UserId == owner, cancellationToken);
     }
+
+    public async Task MarkResurfacedAsync(
+        Guid userId, IReadOnlyList<Guid> noteIds, DateTime nowUtc, CancellationToken cancellationToken = default)
+    {
+        if (noteIds.Count == 0)
+        {
+            return;
+        }
+
+        var noteIdsArray = noteIds.Select(id => NoteId.CreateFromDatabase(id)).ToArray();
+        var owner = UserId.CreateFromDatabase(userId);
+
+        await Context.Set<Note>()
+            .Where(n => n.UserId == owner && noteIdsArray.Contains(n.Id))
+            .ExecuteUpdateAsync(s => s.SetProperty(n => n.LastResurfacedAt, nowUtc), cancellationToken);
+    }
 }

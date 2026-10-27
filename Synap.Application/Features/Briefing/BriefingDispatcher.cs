@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Synap.Domain;
 using Synap.Shared.Application.Interfaces;
 
@@ -30,11 +31,19 @@ public sealed class BriefingDispatcher
 {
     private readonly BriefingContentService _content;
     private readonly ITelegramSender _telegramSender;
+    private readonly INoteWriteRepository _noteWriteRepository;
+    private readonly ILogger<BriefingDispatcher> _logger;
 
-    public BriefingDispatcher(BriefingContentService content, ITelegramSender telegramSender)
+    public BriefingDispatcher(
+        BriefingContentService content,
+        ITelegramSender telegramSender,
+        INoteWriteRepository noteWriteRepository,
+        ILogger<BriefingDispatcher> logger)
     {
         _content = content;
         _telegramSender = telegramSender;
+        _noteWriteRepository = noteWriteRepository;
+        _logger = logger;
     }
 
     /// <summary>
@@ -64,8 +73,27 @@ public sealed class BriefingDispatcher
             text = BriefingMessage.NothingToReport;
         }
 
-        return await _telegramSender.SendAsync(new TelegramMessage(user.TelegramChatId!, text), cancellationToken)
-            ? BriefingDispatchResult.Sent
-            : BriefingDispatchResult.DeliveryFailed;
+        var sent = await _telegramSender.SendAsync(new TelegramMessage(user.TelegramChatId!, text), cancellationToken);
+        if (!sent)
+        {
+            return BriefingDispatchResult.DeliveryFailed;
+        }
+
+        // Marcar notas rescatadas solo tras entrega exitosa (smart-resurfacing, Decisión 6).
+        // Un fallo al marcar nunca impide retornar Sent: el briefing ya se entregó.
+        var resurfacedIds = content.ResurfacedNotes.Select(n => n.Id).ToList();
+        if (resurfacedIds.Count > 0)
+        {
+            try
+            {
+                await _noteWriteRepository.MarkResurfacedAsync(user.Id.Value, resurfacedIds, nowUtc, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "No se pudieron marcar las notas rescatadas para el usuario {UserId}.", user.Id.Value);
+            }
+        }
+
+        return BriefingDispatchResult.Sent;
     }
 }

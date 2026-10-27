@@ -1,6 +1,7 @@
 using Synap.Domain;
 using Synap.Shared.Application.Interfaces;
 using System.Collections.Concurrent;
+using System.Net.Http;
 
 namespace Synap.IntegrationTests;
 
@@ -14,9 +15,23 @@ public sealed class ApiAiServiceFake : IAiServiceClient
     private readonly ConcurrentDictionary<string, IReadOnlyList<LlmModel>> _modelsByKey = new();
     private readonly ConcurrentDictionary<string, ConcurrentQueue<AgentStepResult>> _stepsByKey = new();
 
+    // Por nota: el resultado preconfigurado de GetConnectionsAsync. Si no está configurado, devuelve Pending.
+    private readonly ConcurrentDictionary<Guid, NoteConnectionsResult> _connectionsByNote = new();
+
+    // Por usuario: la lista de pares preconfigurada para GetSimilarityPairsAsync.
+    private readonly ConcurrentDictionary<Guid, IReadOnlyList<SimilarityPair>> _pairsByUser = new();
+
     public ConcurrentBag<(Guid UserId, string Query)> Searches { get; } = [];
     public ConcurrentBag<(string Key, IReadOnlyList<AgentMessage> Messages)> StepRequests { get; } = [];
     public ConcurrentBag<(string Key, IReadOnlyList<string>? Memory)> Asks { get; } = [];
+
+    /// <summary>Preconfigurar el resultado de GetConnectionsAsync para una nota.</summary>
+    public void SetConnections(Guid noteId, NoteConnectionsResult result)
+        => _connectionsByNote[noteId] = result;
+
+    /// <summary>Preconfigurar los pares de similitud devueltos para un usuario.</summary>
+    public void SetSimilarityPairs(Guid userId, IReadOnlyList<SimilarityPair> pairs)
+        => _pairsByUser[userId] = pairs;
 
     /// <summary>Makes <paramref name="groqKey"/> valid, with these models.</summary>
     public void AcceptKey(string groqKey, params LlmModel[] models) => _modelsByKey[groqKey] = models;
@@ -69,5 +84,36 @@ public sealed class ApiAiServiceFake : IAiServiceClient
     {
         Searches.Add((userId, query));
         return Task.FromResult<IReadOnlyList<NoteSearchHit>>([]);
+    }
+
+    public Task<NoteConnectionsResult> GetConnectionsAsync(
+        Guid noteId,
+        Guid userId,
+        double minSimilarity,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        if (_connectionsByNote.TryGetValue(noteId, out var result))
+        {
+            return Task.FromResult(result);
+        }
+
+        throw new HttpRequestException("Servicio de análisis no disponible (fake).");
+    }
+
+    public Task<IReadOnlyList<SimilarityPair>> GetSimilarityPairsAsync(
+        Guid userId,
+        IReadOnlyList<Guid> anchorIds,
+        IReadOnlyList<Guid> candidateIds,
+        double minSimilarity,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        if (_pairsByUser.TryGetValue(userId, out var pairs))
+        {
+            return Task.FromResult(pairs);
+        }
+
+        return Task.FromResult<IReadOnlyList<SimilarityPair>>([]);
     }
 }

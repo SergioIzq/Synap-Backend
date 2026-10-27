@@ -143,6 +143,76 @@ public sealed class BriefingReadRepository : IBriefingReadRepository
             rows.Count == 0 ? 0 : (int)rows[0].TotalCount);
     }
 
+    public async Task<IReadOnlyList<Guid>> ListRecentAnchorIdsAsync(
+        Guid userId, DateTime recentSinceUtc, int limit, CancellationToken cancellationToken = default)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+
+        const string sql = """
+            SELECT n.id
+            FROM notes n
+            WHERE n.user_id = @UserId
+              AND n.updated_at >= @RecentSince
+            ORDER BY n.updated_at DESC
+            LIMIT @Limit
+            """;
+
+        return (await connection.QueryAsync<Guid>(new CommandDefinition(
+            sql,
+            new { UserId = userId, RecentSince = recentSinceUtc, Limit = limit },
+            cancellationToken: cancellationToken))).ToList();
+    }
+
+    public async Task<IReadOnlyList<Guid>> ListDormantCandidateIdsAsync(
+        Guid userId, DateTime dormantBeforeUtc, DateTime cooldownBeforeUtc, CancellationToken cancellationToken = default)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+
+        // Última actividad = mayor de updated_at, last_viewed_at (si existe), last_resurfaced_at (si existe).
+        // COALESCE(..., '-infinity') evita comparaciones contra NULL.
+        const string sql = """
+            SELECT n.id
+            FROM notes n
+            WHERE n.user_id = @UserId
+              AND n.status IS NULL
+              AND GREATEST(n.updated_at,
+                           COALESCE(n.last_viewed_at, '-infinity'::timestamptz),
+                           COALESCE(n.last_resurfaced_at, '-infinity'::timestamptz)) < @DormantBefore
+              AND (n.last_resurfaced_at IS NULL OR n.last_resurfaced_at < @CooldownBefore)
+            ORDER BY n.updated_at ASC
+            """;
+
+        return (await connection.QueryAsync<Guid>(new CommandDefinition(
+            sql,
+            new { UserId = userId, DormantBefore = dormantBeforeUtc, CooldownBefore = cooldownBeforeUtc },
+            cancellationToken: cancellationToken))).ToList();
+    }
+
+    public async Task<IReadOnlyList<BriefingNoteDetail>> ListNoteDetailsByIdsAsync(
+        Guid userId, IReadOnlyList<Guid> noteIds, CancellationToken cancellationToken = default)
+    {
+        if (noteIds.Count == 0)
+        {
+            return [];
+        }
+
+        using var connection = _dbConnectionFactory.CreateConnection();
+
+        const string sql = """
+            SELECT n.id AS Id, n.title AS Title, n.content AS Content,
+                   GREATEST(n.updated_at,
+                            COALESCE(n.last_viewed_at, '-infinity'::timestamptz),
+                            COALESCE(n.last_resurfaced_at, '-infinity'::timestamptz)) AS LastActivity
+            FROM notes n
+            WHERE n.id = ANY(@NoteIds) AND n.user_id = @UserId
+            """;
+
+        return (await connection.QueryAsync<BriefingNoteDetail>(new CommandDefinition(
+            sql,
+            new { NoteIds = noteIds.ToArray(), UserId = userId },
+            cancellationToken: cancellationToken))).ToList();
+    }
+
     // COUNT(*) OVER() is a bigint, so the row takes a long and the section narrows it: a section
     // holds at most a few items and a total nobody will ever push past int.
     private sealed record ReminderRow(Guid Id, string Text, DateTime DueAt, string? NoteTitle, long TotalCount);

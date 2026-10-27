@@ -5,6 +5,7 @@ using SergioIzq.AspNetCore.Kernel.Controllers;
 using Synap.Application.Features.Notes.Commands.AddTag;
 using Synap.Application.Features.Notes.Commands.Create;
 using Synap.Application.Features.Notes.Commands.Delete;
+using Synap.Application.Features.Notes.Commands.MarkViewed;
 using Synap.Application.Features.Notes.Commands.QuickCapture;
 using Synap.Application.Features.Notes.Commands.SetStatus;
 using Synap.Application.Features.Notes.Commands.Update;
@@ -23,8 +24,11 @@ namespace Synap.Api.Controllers;
 [Route("api/notes")]
 public class NotesController : AbsController
 {
+    private readonly ISender _sender;
+
     public NotesController(ISender sender) : base(sender)
     {
+        _sender = sender;
     }
 
     [HttpPost]
@@ -75,6 +79,31 @@ public class NotesController : AbsController
     [HttpGet("{id:guid}/related")]
     public async Task<IActionResult> GetRelated(Guid id)
         => await SendAndHandleAsync(new GetRelatedNotesQuery(id));
+
+    /// <summary>
+    /// Conexiones de una nota: notas del mismo usuario que se parecen por encima del umbral,
+    /// con el tema común cuando al menos dos comparten etiqueta (smart-resurfacing, Decisión 1).
+    /// Devuelve 503 si el servicio de análisis no responde.
+    /// </summary>
+    [HttpGet("{id:guid}/connections")]
+    public async Task<IActionResult> GetConnections(Guid id)
+    {
+        var result = await _sender.Send(new GetNoteConnectionsQuery(id), HttpContext.RequestAborted);
+        if (result.IsFailure && result.Error.Code == "ai-service-unavailable")
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = result.Error.Message });
+        }
+
+        return HandleResult(result);
+    }
+
+    /// <summary>
+    /// Registra que el usuario ha abierto la nota; actualiza <c>last_viewed_at</c> sin modificar
+    /// el contenido ni encolar embedding (smart-resurfacing, Decisión 4).
+    /// </summary>
+    [HttpPost("{id:guid}/view")]
+    public async Task<IActionResult> MarkViewed(Guid id)
+        => await SendAndHandleAsync(new MarkNoteViewedCommand(id));
 
     /// <summary>Used by the iOS Shortcut, authenticated with the personal access token (design.md Decision 3).</summary>
     [HttpPost("quick-capture")]

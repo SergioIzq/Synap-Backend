@@ -1,3 +1,5 @@
+using Dapper;
+using Npgsql;
 using Synap.Domain;
 using Synap.Infrastructure.Persistence.Data.Briefing;
 using Synap.Shared.Domain.ValueObjects;
@@ -277,5 +279,127 @@ public class BriefingQueriesTests
         Assert.Equal(BriefingLimits.ItemsPerSection, section.Items.Count);
         Assert.Equal(BriefingLimits.ItemsPerSection + 3, section.Total);
         Assert.True(section.IsTruncated);
+    }
+
+    // ── smart-resurfacing 1.8 — motivos y candidatas ────────────────────────────────────────
+
+    [Fact]
+    public async Task Dormant_note_without_recent_activity_is_a_candidate()
+    {
+        await using var context = _fixture.CreateContext();
+        var user = NewUser();
+        context.Add(user);
+
+        var dormant = Note.Create(user.Id, NoteType.Text, "Dormida", "contenido");
+        // Simular que lleva más de 30 días sin actividad ajustando updated_at en la entidad
+        // (via EF directamente después de guardar).
+        context.Add(dormant);
+        await context.SaveChangesAsync();
+
+        // Retroceder updated_at 40 días en la base de datos directamente
+        await using (var conn = new NpgsqlConnection(_fixture.ConnectionString))
+        {
+            await conn.ExecuteAsync(
+                "UPDATE notes SET updated_at = @At WHERE id = @Id",
+                new { At = Now - TimeSpan.FromDays(40), Id = dormant.Id.Value });
+        }
+
+        var dormantBefore = Now - BriefingLimits.DormantAfter;
+        var cooldownBefore = Now - BriefingLimits.ResurfaceCooldown;
+
+        var candidates = await Repository().ListDormantCandidateIdsAsync(
+            user.Id.Value, dormantBefore, cooldownBefore);
+
+        Assert.Contains(dormant.Id.Value, candidates);
+    }
+
+    [Fact]
+    public async Task Recently_viewed_note_is_not_a_candidate()
+    {
+        await using var context = _fixture.CreateContext();
+        var user = NewUser();
+        context.Add(user);
+
+        var active = Note.Create(user.Id, NoteType.Text, "Activa", "contenido");
+        active.MarkViewed(); // last_viewed_at = ahora
+        context.Add(active);
+        await context.SaveChangesAsync();
+
+        var dormantBefore = Now - BriefingLimits.DormantAfter;
+        var cooldownBefore = Now - BriefingLimits.ResurfaceCooldown;
+
+        var candidates = await Repository().ListDormantCandidateIdsAsync(
+            user.Id.Value, dormantBefore, cooldownBefore);
+
+        Assert.DoesNotContain(active.Id.Value, candidates);
+    }
+
+    [Fact]
+    public async Task Note_with_status_is_not_a_candidate()
+    {
+        await using var context = _fixture.CreateContext();
+        var user = NewUser();
+        context.Add(user);
+
+        var withStatus = Note.Create(user.Id, NoteType.Text, "Con estado", "contenido", NoteStatus.InProgress);
+        context.Add(withStatus);
+        await context.SaveChangesAsync();
+
+        await using (var conn = new NpgsqlConnection(_fixture.ConnectionString))
+        {
+            await conn.ExecuteAsync(
+                "UPDATE notes SET updated_at = @At WHERE id = @Id",
+                new { At = Now - TimeSpan.FromDays(40), Id = withStatus.Id.Value });
+        }
+
+        var dormantBefore = Now - BriefingLimits.DormantAfter;
+        var cooldownBefore = Now - BriefingLimits.ResurfaceCooldown;
+
+        var candidates = await Repository().ListDormantCandidateIdsAsync(
+            user.Id.Value, dormantBefore, cooldownBefore);
+
+        Assert.DoesNotContain(withStatus.Id.Value, candidates);
+    }
+
+    [Fact]
+    public async Task No_recent_anchors_returns_empty()
+    {
+        await using var context = _fixture.CreateContext();
+        var user = NewUser();
+        context.Add(user);
+        await context.SaveChangesAsync();
+
+        var recentSince = Now - BriefingLimits.RecentWindow;
+        var anchors = await Repository().ListRecentAnchorIdsAsync(user.Id.Value, recentSince, BriefingLimits.MaxRecentAnchors);
+
+        Assert.Empty(anchors);
+    }
+
+    [Fact]
+    public async Task Recently_surfaced_note_is_excluded_during_cooldown()
+    {
+        await using var context = _fixture.CreateContext();
+        var user = NewUser();
+        context.Add(user);
+
+        var recentlySurfaced = Note.Create(user.Id, NoteType.Text, "Rescatada", "contenido");
+        context.Add(recentlySurfaced);
+        await context.SaveChangesAsync();
+
+        // Poner updated_at 40 días atrás pero last_resurfaced_at ayer (dentro del cooldown)
+        await using (var conn = new NpgsqlConnection(_fixture.ConnectionString))
+        {
+            await conn.ExecuteAsync(
+                "UPDATE notes SET updated_at = @At, last_resurfaced_at = @Resurfaced WHERE id = @Id",
+                new { At = Now - TimeSpan.FromDays(40), Resurfaced = Now - TimeSpan.FromDays(1), Id = recentlySurfaced.Id.Value });
+        }
+
+        var dormantBefore = Now - BriefingLimits.DormantAfter;
+        var cooldownBefore = Now - BriefingLimits.ResurfaceCooldown;
+
+        var candidates = await Repository().ListDormantCandidateIdsAsync(
+            user.Id.Value, dormantBefore, cooldownBefore);
+
+        Assert.DoesNotContain(recentlySurfaced.Id.Value, candidates);
     }
 }

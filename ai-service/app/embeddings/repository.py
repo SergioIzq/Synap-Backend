@@ -62,6 +62,125 @@ async def find_related_notes(note_id: str, user_id: str, limit: int = DEFAULT_LI
         return [dict(row) for row in rows]
 
 
+async def find_note_connections(
+    note_id: str,
+    user_id: str,
+    min_similarity: float,
+    limit: int = DEFAULT_LIMIT,
+) -> dict:
+    """GET /internal/notes/{id}/connections (smart-resurfacing, Decisión 1).
+
+    Returns ``{"indexed": bool, "notes": [...]}`` where ``indexed`` is False when the note has
+    no embedding from the current model (the note is still being analysed).  Connections are
+    scoped to the same user and the same model, and filtered to be above *min_similarity*.
+    """
+    pool = get_pool()
+    async with pool.acquire() as connection:
+        # Check whether the anchor note is indexed with the current model.
+        anchor = await connection.fetchrow(
+            "SELECT note_id FROM note_embeddings WHERE note_id = $1 AND user_id = $2 AND model = $3",
+            note_id,
+            user_id,
+            settings.embedding_model,
+        )
+        if not anchor:
+            return {"indexed": False, "notes": []}
+
+        rows = await connection.fetch(
+            """
+            SELECT n.id, n.title, n.content, n.note_type,
+                   1 - (target.embedding <=> other.embedding) AS similarity
+            FROM note_embeddings AS target
+            JOIN note_embeddings AS other
+                ON other.user_id = target.user_id
+               AND other.note_id != target.note_id
+               AND other.model = $5
+            JOIN notes n ON n.id = other.note_id
+            WHERE target.note_id = $1 AND target.user_id = $2 AND target.model = $5
+              AND (1 - (target.embedding <=> other.embedding)) >= $3
+            ORDER BY target.embedding <=> other.embedding
+            LIMIT $4
+            """,
+            note_id,
+            user_id,
+            min_similarity,
+            limit,
+            settings.embedding_model,
+        )
+        return {
+            "indexed": True,
+            "notes": [
+                {
+                    "id": str(row["id"]),
+                    "title": row["title"],
+                    "content": row["content"],
+                    "type": row["note_type"],
+                    "similarity": float(row["similarity"]),
+                }
+                for row in rows
+            ],
+        }
+
+
+async def get_similarity_pairs(
+    user_id: str,
+    anchor_ids: list[str],
+    candidate_ids: list[str],
+    min_similarity: float,
+    limit: int,
+) -> list[dict]:
+    """POST /internal/notes/similarity-pairs (smart-resurfacing, Decisión 5).
+
+    For each candidate, finds the anchor it is most similar to (above *min_similarity*),
+    filtered to the current model and *user_id* on both sides.  Returns at most *limit* pairs
+    sorted by similarity descending.
+    """
+    if not anchor_ids or not candidate_ids:
+        return []
+
+    pool = get_pool()
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            SELECT DISTINCT ON (c.note_id)
+                c.note_id  AS candidate_id,
+                a.note_id  AS anchor_id,
+                1 - (c.embedding <=> a.embedding) AS similarity
+            FROM note_embeddings AS c
+            JOIN note_embeddings AS a
+                ON a.note_id = ANY($2::uuid[])
+               AND a.user_id = $1
+               AND a.model = $5
+            WHERE c.note_id = ANY($3::uuid[])
+              AND c.user_id = $1
+              AND c.model = $5
+              AND (1 - (c.embedding <=> a.embedding)) >= $4
+            ORDER BY c.note_id, (c.embedding <=> a.embedding)
+            LIMIT $6
+            """,
+            user_id,
+            [str(aid) for aid in anchor_ids],
+            [str(cid) for cid in candidate_ids],
+            min_similarity,
+            settings.embedding_model,
+            limit,
+        )
+        # Re-sort by similarity descending (DISTINCT ON orders by the partition key first).
+        result = sorted(
+            [
+                {
+                    "candidate_id": str(row["candidate_id"]),
+                    "anchor_id": str(row["anchor_id"]),
+                    "similarity": float(row["similarity"]),
+                }
+                for row in rows
+            ],
+            key=lambda r: r["similarity"],
+            reverse=True,
+        )
+        return result[:limit]
+
+
 async def search_similar(user_id: str, query_embedding: list[float], limit: int = DEFAULT_LIMIT) -> list[dict]:
     pool = get_pool()
     async with pool.acquire() as connection:

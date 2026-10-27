@@ -31,7 +31,11 @@ public class BriefingDeliveryServiceTests
 
     private BriefingDeliveryService Service() => new(
         _users,
-        new BriefingDispatcher(new BriefingContentService(_content, new FakeCalendarReader(), new FakeAiServiceClient()), _telegram),
+        new BriefingDispatcher(
+            new BriefingContentService(_content, new FakeCalendarReader(), new FakeAiServiceClient()),
+            _telegram,
+            new FakeNoteRepository(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<BriefingDispatcher>.Instance),
         _telegram,
         _unitOfWork,
         _withheld,
@@ -292,5 +296,17 @@ public class BriefingDeliveryServiceTests
         public Task<BriefingSection<BriefingNote>> ListPendingNotesAsync(
             Guid userId, DateTime pausedBeforeUtc, DateTime nowUtc, int limit, CancellationToken cancellationToken = default)
             => Task.FromResult(BriefingSection<BriefingNote>.Empty);
+
+        public Task<IReadOnlyList<Guid>> ListRecentAnchorIdsAsync(
+            Guid userId, DateTime recentSinceUtc, int limit, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<Guid>>([]);
+
+        public Task<IReadOnlyList<Guid>> ListDormantCandidateIdsAsync(
+            Guid userId, DateTime dormantBeforeUtc, DateTime cooldownBeforeUtc, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<Guid>>([]);
+
+        public Task<IReadOnlyList<BriefingNoteDetail>> ListNoteDetailsByIdsAsync(
+            Guid userId, IReadOnlyList<Guid> noteIds, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<BriefingNoteDetail>>([]);
     }
 }

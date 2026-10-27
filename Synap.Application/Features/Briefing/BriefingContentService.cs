@@ -1,6 +1,7 @@
 using Synap.Domain;
 using Synap.Application.Features.Calendar;
 using Synap.Shared.Application.Interfaces;
+using Microsoft.Extensions.Logging;
 
 namespace Synap.Application.Features.Briefing;
 
@@ -17,17 +18,20 @@ public sealed class BriefingContentService
     private readonly ICalendarReader _calendarReader;
     private readonly IAiServiceClient _aiServiceClient;
     private readonly TimeSpan _calendarTimeout;
+    private readonly TimeSpan _resurfacingTimeout;
 
     public BriefingContentService(
         IBriefingReadRepository briefingReadRepository,
         ICalendarReader calendarReader,
         IAiServiceClient aiServiceClient,
-        TimeSpan? calendarTimeout = null)
+        TimeSpan? calendarTimeout = null,
+        TimeSpan? resurfacingTimeout = null)
     {
         _briefingReadRepository = briefingReadRepository;
         _calendarReader = calendarReader;
         _aiServiceClient = aiServiceClient;
         _calendarTimeout = calendarTimeout ?? TimeSpan.FromSeconds(10);
+        _resurfacingTimeout = resurfacingTimeout ?? TimeSpan.FromSeconds(10);
     }
 
     /// <summary>
@@ -55,7 +59,81 @@ public sealed class BriefingContentService
         var untagged = await _briefingReadRepository.ListUntaggedNotesAsync(
             userId, nowUtc - BriefingLimits.UntaggedWindow, BriefingLimits.ItemsPerSection, cancellationToken);
 
-        return new BriefingContent(calendar, reminders, inProgress, pending, untagged);
+        var resurfaced = await ResurfacedAsync(userId, nowUtc, cancellationToken);
+
+        return new BriefingContent(calendar, reminders, inProgress, pending, untagged, resurfaced);
+    }
+
+    /// <summary>
+    /// Las notas dormidas que vuelven a importar porque se relacionan con algo que el usuario ha
+    /// creado o editado recientemente (smart-resurfacing, Decisión 5). Devuelve lista vacía si no
+    /// hay motivos, no hay candidatas, o el ai-service no responde en el tiempo acotado.
+    /// </summary>
+    private async Task<IReadOnlyList<BriefingResurfacedNote>> ResurfacedAsync(
+        Guid userId, DateTime nowUtc, CancellationToken cancellationToken)
+    {
+        var dormantBefore = nowUtc - BriefingLimits.DormantAfter;
+        var cooldownBefore = nowUtc - BriefingLimits.ResurfaceCooldown;
+        var recentSince = nowUtc - BriefingLimits.RecentWindow;
+
+        var anchors = await _briefingReadRepository.ListRecentAnchorIdsAsync(
+            userId, recentSince, BriefingLimits.MaxRecentAnchors, cancellationToken);
+        if (anchors.Count == 0)
+        {
+            return [];
+        }
+
+        var candidates = await _briefingReadRepository.ListDormantCandidateIdsAsync(
+            userId, dormantBefore, cooldownBefore, cancellationToken);
+        if (candidates.Count == 0)
+        {
+            return [];
+        }
+
+        IReadOnlyList<SimilarityPair> pairs;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(_resurfacingTimeout);
+        try
+        {
+            pairs = await _aiServiceClient.GetSimilarityPairsAsync(
+                userId, anchors, candidates,
+                RelevanceLimits.RelatedNoteSimilarityFloor,
+                BriefingLimits.ResurfacedPerBriefing,
+                cts.Token);
+        }
+        catch
+        {
+            return [];
+        }
+
+        if (pairs.Count == 0)
+        {
+            return [];
+        }
+
+        var candidateIds = pairs.Select(p => p.CandidateId).Distinct().ToList();
+        var anchorIds = pairs.Select(p => p.AnchorId).Distinct().ToList();
+        var allIds = candidateIds.Concat(anchorIds).Distinct().ToList();
+
+        var details = await _briefingReadRepository.ListNoteDetailsByIdsAsync(userId, allIds, cancellationToken);
+        var detailById = details.ToDictionary(d => d.Id);
+
+        var results = new List<BriefingResurfacedNote>();
+        foreach (var pair in pairs)
+        {
+            if (!detailById.TryGetValue(pair.CandidateId, out var candidate)) continue;
+            if (!detailById.TryGetValue(pair.AnchorId, out var anchor)) continue;
+
+            var dormantForDays = (int)(nowUtc - candidate.LastActivity).TotalDays;
+            results.Add(new BriefingResurfacedNote(
+                candidate.Id,
+                candidate.Title,
+                candidate.Content,
+                dormantForDays,
+                new BriefingNote(anchor.Id, anchor.Title, anchor.Content)));
+        }
+
+        return results;
     }
 
     /// <summary>

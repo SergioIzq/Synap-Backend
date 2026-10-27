@@ -599,6 +599,10 @@ internal sealed class NotesView(FakeNoteRepository notes) : INoteReadRepository
 
     public Task<IReadOnlyList<string>> ListTagsAsync(Guid userId, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
+
+    public Task<IReadOnlyList<(Guid NoteId, string TagName)>> GetTagsByNoteIdsAsync(
+        Guid userId, IReadOnlyList<Guid> noteIds, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException();
 }
 
 /// <summary>

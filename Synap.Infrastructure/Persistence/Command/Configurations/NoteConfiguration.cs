@@ -48,6 +48,9 @@ public sealed class NoteConfiguration : IEntityTypeConfiguration<Note>
 
         builder.Property(n => n.StatusChangedAt).HasColumnName("status_changed_at");
 
+        builder.Property(n => n.LastViewedAt).HasColumnName("last_viewed_at");
+        builder.Property(n => n.LastResurfacedAt).HasColumnName("last_resurfaced_at");
+
         builder.Property(n => n.FechaCreacion)
             .HasColumnName("created_at")
             .IsRequired()

@@ -70,6 +70,18 @@ public abstract record BriefingCalendar
 }
 
 /// <summary>
+/// Una nota dormida seleccionada para aparecer en el briefing (smart-resurfacing, Decisión 5).
+/// <see cref="DormantForDays"/> es cuántos días lleva sin actividad.
+/// <see cref="Reason"/> es la nota reciente que más se le parece, motivo de que vuelva ahora.
+/// </summary>
+public sealed record BriefingResurfacedNote(
+    Guid Id,
+    string? Title,
+    string Content,
+    int DormantForDays,
+    BriefingNote Reason);
+
+/// <summary>
 /// What one user's briefing is made of at the moment it was built. Deliberately plain data: it is
 /// computed from queries, never generated, so that everything the briefing states is something the
 /// database said (design.md Decision 1).
@@ -79,7 +91,8 @@ public sealed record BriefingContent(
     BriefingSection<BriefingReminder> RemindersToday,
     BriefingSection<BriefingNote> InProgress,
     BriefingSection<BriefingNote> Pending,
-    BriefingSection<BriefingNote> UntaggedNotes)
+    BriefingSection<BriefingNote> UntaggedNotes,
+    IReadOnlyList<BriefingResurfacedNote>? Resurfaced = null)
 {
     public static BriefingContent Empty { get; } =
         new(BriefingCalendar.Default, BriefingSection<BriefingReminder>.Empty,
@@ -94,6 +107,9 @@ public sealed record BriefingContent(
     public BriefingSection<BriefingEvent> EventsToday =>
         Calendar is BriefingCalendar.Events e ? e.Section : BriefingSection<BriefingEvent>.Empty;
 
+    /// <summary>Las notas dormidas a retomar; vacío o nulo si no hay ninguna.</summary>
+    public IReadOnlyList<BriefingResurfacedNote> ResurfacedNotes => Resurfaced ?? [];
+
     /// <summary>
     /// Nothing to report. The automatic briefing stays silent on such a day and resolves it
     /// anyway; one the user asked for still answers, saying so (specs/briefing).
@@ -101,7 +117,8 @@ public sealed record BriefingContent(
     /// (specs/briefing "A day whose only entry is an unavailable calendar is empty").
     /// </summary>
     public bool IsEmpty =>
-        !HasEvents && RemindersToday.IsEmpty && InProgress.IsEmpty && Pending.IsEmpty && UntaggedNotes.IsEmpty;
+        !HasEvents && RemindersToday.IsEmpty && InProgress.IsEmpty && Pending.IsEmpty
+        && UntaggedNotes.IsEmpty && ResurfacedNotes.Count == 0;
 
     private bool HasEvents => Calendar is BriefingCalendar.Events { Section.IsEmpty: false };
 }
@@ -149,20 +166,34 @@ public static class BriefingLimits
 
     /// <summary>
     /// How close in meaning a note has to be to an event's title before it is shown under that
-    /// event (calendar-integration design.md Decision 5). Above the AI service's own keep rule on
-    /// purpose: that rule decides what is worth showing for a question the user asked, and an
-    /// event is not a question - nobody asked for these notes, so a weak match here is noise the
-    /// user has to read past rather than an answer they can judge. Without a floor above it, every
-    /// event drags in the least-unrelated notes in the vault and the briefing starts making
-    /// connections that are not there.
-    ///
-    /// A note found by its exact words carries no similarity at all and is kept regardless: a note
-    /// titled "Migrar auth a OAuth" under a meeting called "Revisión OAuth" is related on the word,
-    /// which is one of the reasons the search is the one the assistant uses.
-    ///
-    /// Here rather than in specs/briefing for the same reason <see cref="PausedResurfaceAfter"/> is:
-    /// it decides how much the briefing shows, not what it promises. Settled against a real vault
-    /// (task 9.6).
+    /// event (calendar-integration design.md Decision 5). Delegated to
+    /// <see cref="RelevanceLimits.RelatedNoteSimilarityFloor"/> so the briefing, connections and
+    /// smart-resurfacing all share one definition of «related» (smart-resurfacing, Decisión 1).
     /// </summary>
-    public const double RelatedNoteSimilarityFloor = 0.55;
+    public static double RelatedNoteSimilarityFloor => RelevanceLimits.RelatedNoteSimilarityFloor;
+
+    // ── Smart-resurfacing (smart-resurfacing design.md Decisión 5) ──────────────────────────
+
+    /// <summary>
+    /// Una nota sin actividad desde hace más de este periodo se considera dormida y se convierte
+    /// en candidata a resurfacing (última actividad = MAX(updated_at, last_viewed_at, last_resurfaced_at)).
+    /// </summary>
+    public static readonly TimeSpan DormantAfter = TimeSpan.FromDays(30);
+
+    /// <summary>
+    /// Ventana hacia atrás para recoger los motivos: notas editadas o creadas dentro de este periodo.
+    /// </summary>
+    public static readonly TimeSpan RecentWindow = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// Una nota rescatada no vuelve a ser candidata hasta que pase este periodo desde
+    /// <c>last_resurfaced_at</c>, evitando que aparezca cada día.
+    /// </summary>
+    public static readonly TimeSpan ResurfaceCooldown = TimeSpan.FromDays(30);
+
+    /// <summary>Máximo de notas rescatadas que se muestran por briefing.</summary>
+    public const int ResurfacedPerBriefing = 3;
+
+    /// <summary>Máximo de motivos que se pasan al ai-service para el cálculo de pares.</summary>
+    public const int MaxRecentAnchors = 20;
 }

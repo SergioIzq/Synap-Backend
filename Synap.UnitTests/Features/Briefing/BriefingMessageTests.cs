@@ -383,4 +383,65 @@ public class BriefingMessageTests
         Assert.Contains("Pendiente</b> (8)", text);
         Assert.Contains("Notas sin etiquetar</b> (1)", text);
     }
+
+    // ── smart-resurfacing 1.10 — sección «Para retomar» ─────────────────────────────────────
+
+    private static BriefingResurfacedNote Resurfaced(string? title, BriefingNote reason, int dormantForDays = 40)
+        => new(Guid.NewGuid(), title, "contenido de la nota", dormantForDays, reason);
+
+    private static BriefingContent WithResurfaced(IReadOnlyList<BriefingResurfacedNote> resurfaced)
+        => new(BriefingCalendar.Default, BriefingSection<BriefingReminder>.Empty,
+            BriefingSection<BriefingNote>.Empty, BriefingSection<BriefingNote>.Empty,
+            BriefingSection<BriefingNote>.Empty, resurfaced);
+
+    [Fact]
+    public void Resurfaced_notes_section_appears_with_days_and_reason()
+    {
+        var reason = Note("Helm upgrade");
+        var note = Resurfaced("Kubernetes deploy", reason, 42);
+        var text = BriefingMessage.Text(WithResurfaced([note]), null)!;
+
+        Assert.Contains("Para retomar</b> (1)", text);
+        Assert.Contains("Kubernetes deploy", text);
+        Assert.Contains("42 días sin actividad", text);
+        Assert.Contains("Helm upgrade", text);
+    }
+
+    [Fact]
+    public void Resurfaced_section_goes_last()
+    {
+        var reason = Note("Reciente");
+        var content = new BriefingContent(
+            BriefingCalendar.Default,
+            BriefingSection<BriefingReminder>.Empty,
+            BriefingSection<BriefingNote>.Empty,
+            new BriefingSection<BriefingNote>([Note("Pendiente")], 1),
+            BriefingSection<BriefingNote>.Empty,
+            [Resurfaced("Dormida", reason)]);
+
+        var text = BriefingMessage.Text(content, null)!;
+
+        var pendingPos = text.IndexOf("Pendiente</b>", StringComparison.Ordinal);
+        var resurfacedPos = text.IndexOf("Para retomar</b>", StringComparison.Ordinal);
+        Assert.True(pendingPos < resurfacedPos, "«Para retomar» debe ir después de «Pendiente»");
+    }
+
+    [Fact]
+    public void Resurfaced_section_absent_when_empty()
+    {
+        var text = BriefingMessage.Text(With(pending: [Note("Una nota")]), null)!;
+
+        Assert.DoesNotContain("Para retomar", text);
+    }
+
+    [Fact]
+    public void Resurfaced_title_with_html_is_escaped()
+    {
+        var reason = Note("Reason");
+        var note = Resurfaced("<bold>nota</bold>", reason, 5);
+        var text = BriefingMessage.Text(WithResurfaced([note]), null)!;
+
+        Assert.DoesNotContain("<bold>", text);
+        Assert.Contains("&lt;bold&gt;", text);
+    }
 }

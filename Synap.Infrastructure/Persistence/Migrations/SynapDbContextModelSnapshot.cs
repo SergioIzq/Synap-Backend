@@ -118,6 +118,14 @@ namespace Synap.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp without time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<DateTime?>("LastResurfacedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("last_resurfaced_at");
+
+                    b.Property<DateTime?>("LastViewedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("last_viewed_at");
+
                     b.Property<string>("Status")
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")

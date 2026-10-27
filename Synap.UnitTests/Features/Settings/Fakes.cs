@@ -160,6 +160,24 @@ internal sealed class FakeAiServiceClient : IAiServiceClient
         ListModelsKeys.Add(groqApiKey);
         return Task.FromResult(ModelsResult);
     }
+
+    private readonly Dictionary<Guid, NoteConnectionsResult> _connections = [];
+
+    public void SetConnections(Guid noteId, NoteConnectionsResult result)
+        => _connections[noteId] = result;
+
+    public Task<NoteConnectionsResult> GetConnectionsAsync(
+        Guid noteId, Guid userId, double minSimilarity, int limit, CancellationToken cancellationToken = default)
+    {
+        if (_connections.TryGetValue(noteId, out var result))
+            return Task.FromResult(result);
+        throw new System.Net.Http.HttpRequestException("ai-service unavailable (fake)");
+    }
+
+    public Task<IReadOnlyList<SimilarityPair>> GetSimilarityPairsAsync(
+        Guid userId, IReadOnlyList<Guid> anchorIds, IReadOnlyList<Guid> candidateIds,
+        double minSimilarity, int limit, CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<SimilarityPair>>([]);
 }
 
 internal sealed class FakeNoteRepository : INoteWriteRepository
@@ -176,6 +194,10 @@ internal sealed class FakeNoteRepository : INoteWriteRepository
 
     public Task<Note?> GetOwnedByUserAsync(Guid noteId, Guid userId, CancellationToken cancellationToken = default)
         => Task.FromResult(_notes.FirstOrDefault(n => n.Id.Value == noteId && n.UserId.Value == userId));
+
+    public Task MarkResurfacedAsync(
+        Guid userId, IReadOnlyList<Guid> noteIds, DateTime nowUtc, CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
 
     public Task<Note?> GetByIdAsync(Guid id, CancellationToken cancellationToken)
         => Task.FromResult(_notes.FirstOrDefault(n => n.Id.Value == id));

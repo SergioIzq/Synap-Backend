@@ -12,7 +12,10 @@ using Synap.Domain;
 using Synap.Infrastructure.BackgroundJobs;
 using Synap.Infrastructure.Persistence;
 using Synap.Infrastructure.Persistence.Command;
+using Dapper;
+using Npgsql;
 using Synap.Infrastructure.Persistence.Data.Briefing;
+using Synap.Infrastructure.Persistence.Data.Notes;
 using Synap.Infrastructure.Persistence.Data.Users;
 using Synap.Shared.Application.Interfaces;
 using Synap.Application.Features.Calendar;
@@ -36,7 +39,7 @@ public class BriefingSweepTests
 
     public BriefingSweepTests(PostgresFixture fixture) => _fixture = fixture;
 
-    private async Task<(User User, ServiceProvider Services, CapturingSender Telegram)> ArrangeAsync(
+    private async Task<(User User, ServiceProvider Services, CapturingSender Telegram, ApiAiServiceFake Ai)> ArrangeAsync(
         bool telegramEnabled = true, int hour = 0, bool linkChat = true, bool enableBriefing = true,
         CalendarReaderFake? calendar = null)
     {
@@ -67,17 +70,19 @@ public class BriefingSweepTests
         await seed.SaveChangesAsync();
 
         var telegram = new CapturingSender { Enabled = telegramEnabled };
+        var aiService = new ApiAiServiceFake();
         var services = new ServiceCollection();
         services.AddSingleton(NullLoggerFactory.Instance);
         services.AddLogging();
         services.AddDbContext<SynapDbContext>(options => options.UseNpgsql(_fixture.ConnectionString));
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<IUserWriteRepository, UserWriteRepository>();
+        services.AddScoped<INoteWriteRepository, NoteWriteRepository>();
         services.AddScoped<IBriefingReadRepository>(_ => new BriefingReadRepository(new TestDbConnectionFactory(_fixture.ConnectionString)));
         // No calendar connected unless a test says otherwise, and an AI service that finds nothing:
         // what the briefing was before calendar-integration (task 5.6).
         services.AddSingleton<ICalendarReader>(calendar ?? new CalendarReaderFake());
-        services.AddSingleton<IAiServiceClient>(new ApiAiServiceFake());
+        services.AddSingleton<IAiServiceClient>(aiService);
         services.AddScoped<BriefingContentService>();
         services.AddScoped<BriefingDispatcher>();
         services.AddScoped<BriefingDeliveryService>();
@@ -90,7 +95,7 @@ public class BriefingSweepTests
             o.BotToken = "bot-token";
         });
 
-        return (user, services.BuildServiceProvider(), telegram);
+        return (user, services.BuildServiceProvider(), telegram, aiService);
     }
 
     /// <summary>
@@ -120,7 +125,7 @@ public class BriefingSweepTests
     [Fact]
     public async Task A_subscribed_user_past_their_hour_is_briefed()
     {
-        var (user, services, telegram) = await ArrangeAsync();
+        var (user, services, telegram, _) = await ArrangeAsync();
 
         Assert.Equal(1, await SweepAsync(services));
 
@@ -135,7 +140,7 @@ public class BriefingSweepTests
     [Fact]
     public async Task A_user_who_has_not_subscribed_is_never_considered()
     {
-        var (_, services, telegram) = await ArrangeAsync(enableBriefing: false);
+        var (_, services, telegram, _) = await ArrangeAsync(enableBriefing: false);
 
         await SweepAsync(services);
 
@@ -148,7 +153,7 @@ public class BriefingSweepTests
         // 23:00 local has not arrived for a sweep running now, whatever time it is - unless it is
         // the last hour of the day, which this guards against by using the current local hour + 2.
         var localHour = UserClock.ToLocal(DateTime.UtcNow, Madrid).Hour;
-        var (user, services, telegram) = await ArrangeAsync(hour: (localHour + 2) % 24);
+        var (user, services, telegram, _) = await ArrangeAsync(hour: (localHour + 2) % 24);
         if (localHour + 2 > 23)
         {
             return; // the "hour" would wrap past midnight and already be behind us
@@ -166,7 +171,7 @@ public class BriefingSweepTests
     [Fact]
     public async Task A_subscriber_with_no_linked_chat_is_not_briefed_and_the_day_stays_open()
     {
-        var (user, services, telegram) = await ArrangeAsync(linkChat: false);
+        var (user, services, telegram, _) = await ArrangeAsync(linkChat: false);
 
         await SweepAsync(services);
 
@@ -188,7 +193,7 @@ public class BriefingSweepTests
     {
         var calendar = new CalendarReaderFake();
         calendar.Unavailable();
-        var (user, services, telegram) = await ArrangeAsync(calendar: calendar);
+        var (user, services, telegram, _) = await ArrangeAsync(calendar: calendar);
 
         Assert.Equal(1, await SweepAsync(services));
 
@@ -213,7 +218,7 @@ public class BriefingSweepTests
     public async Task A_user_with_no_calendar_gets_no_calendar_notice_at_all()
     {
         var calendar = new CalendarReaderFake(); // NotConnected by default
-        var (_, services, telegram) = await ArrangeAsync(calendar: calendar);
+        var (_, services, telegram, _) = await ArrangeAsync(calendar: calendar);
 
         Assert.Equal(1, await SweepAsync(services));
 
@@ -230,7 +235,7 @@ public class BriefingSweepTests
     public async Task A_user_with_no_connected_calendar_gets_the_briefing_they_got_before()
     {
         var calendar = new CalendarReaderFake();
-        var (user, services, telegram) = await ArrangeAsync(calendar: calendar);
+        var (user, services, telegram, _) = await ArrangeAsync(calendar: calendar);
 
         Assert.Equal(1, await SweepAsync(services));
 
@@ -253,7 +258,7 @@ public class BriefingSweepTests
         // The important thing: both users still receive their briefing.
         var calendar = new CalendarReaderFake();
         calendar.Unavailable();
-        var (userA, servicesA, telegramA) = await ArrangeAsync(calendar: calendar);
+        var (userA, servicesA, telegramA, _) = await ArrangeAsync(calendar: calendar);
 
         // Create a second briefing-enabled user in the same database.
         await using var seed = _fixture.CreateContext();
@@ -280,7 +285,7 @@ public class BriefingSweepTests
         var calendar = new CalendarReaderFake();
         var startUtc = DateTime.UtcNow;
         calendar.Returns(new CalendarEvent("Demo con el cliente", startUtc, startUtc.AddHours(1)));
-        var (_, services, telegram) = await ArrangeAsync(calendar: calendar);
+        var (_, services, telegram, _) = await ArrangeAsync(calendar: calendar);
 
         Assert.Equal(1, await SweepAsync(services));
 
@@ -296,7 +301,7 @@ public class BriefingSweepTests
     [Fact]
     public async Task With_telegram_turned_off_the_sweep_does_not_run_at_all()
     {
-        var (user, services, telegram) = await ArrangeAsync(telegramEnabled: false);
+        var (user, services, telegram, _) = await ArrangeAsync(telegramEnabled: false);
         var logger = new RecordingLogger();
 
         await RunOneTickAsync(services, logger);
@@ -312,7 +317,7 @@ public class BriefingSweepTests
     [Fact]
     public async Task A_tick_that_throws_is_recorded_and_the_service_stays_up()
     {
-        var (_, services, _) = await ArrangeAsync();
+        var (_, services, _, _) = await ArrangeAsync();
         var broken = new ServiceCollection();
         broken.AddSingleton(NullLoggerFactory.Instance);
         broken.AddLogging();
@@ -331,6 +336,52 @@ public class BriefingSweepTests
         Assert.Contains(logger.Records, r => r.Contains("sweep tick failed"));
 
         await services.DisposeAsync();
+    }
+
+    // ── smart-resurfacing 1.11 — marcar last_resurfaced_at tras el sweep ────────────────────────
+
+    private async Task<Note> DormantNoteAsync(User user)
+    {
+        await using var seed = _fixture.CreateContext();
+        var note = Note.Create(user.Id, NoteType.Text, "Nota dormida", "contenido relevante");
+        seed.Add(note);
+        await seed.SaveChangesAsync();
+
+        var old = DateTime.UtcNow.AddDays(-40);
+        await using var conn = new NpgsqlConnection(_fixture.ConnectionString);
+        await conn.ExecuteAsync(
+            "UPDATE notes SET updated_at = @old WHERE id = @id",
+            new { old, id = note.Id.Value });
+        return note;
+    }
+
+    [Fact]
+    public async Task Resurfaced_note_gets_last_resurfaced_at_set_after_sent()
+    {
+        var (user, services, telegram, aiService) = await ArrangeAsync();
+        var dormant = await DormantNoteAsync(user);
+        aiService.SetSimilarityPairs(user.Id.Value, [new SimilarityPair(dormant.Id.Value, Guid.NewGuid(), 0.80)]);
+
+        await SweepAsync(services);
+
+        await using var ctx = _fixture.CreateContext();
+        var stored = await ctx.Set<Note>().FirstAsync(n => n.Id == dormant.Id);
+        Assert.NotNull(stored.LastResurfacedAt);
+    }
+
+    [Fact]
+    public async Task A_failed_delivery_does_not_set_last_resurfaced_at()
+    {
+        var (user, services, telegram, aiService) = await ArrangeAsync();
+        telegram.Enabled = false;
+        var dormant = await DormantNoteAsync(user);
+        aiService.SetSimilarityPairs(user.Id.Value, [new SimilarityPair(dormant.Id.Value, Guid.NewGuid(), 0.80)]);
+
+        await SweepAsync(services);
+
+        await using var ctx = _fixture.CreateContext();
+        var stored = await ctx.Set<Note>().FirstAsync(n => n.Id == dormant.Id);
+        Assert.Null(stored.LastResurfacedAt);
     }
 
     /// <summary>The unit of work publishes domain events; nothing here listens for them.</summary>

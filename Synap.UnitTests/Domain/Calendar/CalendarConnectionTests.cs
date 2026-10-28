@@ -42,7 +42,7 @@ public class CalendarConnectionTests
     public void It_is_not_created_without_account_reference_or_credentials(string account, string calendarRef, string credentials)
     {
         Assert.ThrowsAny<ArgumentException>(() => CalendarConnection.Create(
-            Guid.NewGuid(), CalendarProvider.Google, account, calendarRef, credentials, Now));
+            Guid.NewGuid(), CalendarProvider.CalDav, account, calendarRef, credentials, Now));
     }
 
     [Fact]
@@ -105,28 +105,4 @@ public class CalendarEventTests
         Assert.False(new CalendarEvent("Demo", start, start.AddHours(1)).IsAllDay);
     }
 
-    [Fact]
-    public void The_OAuth_nonce_is_single_use()
-    {
-        var user = UserGroqSettingsTests.NewUser();
-        var now = DateTime.UtcNow;
-        user.StartCalendarOAuth("nonce-1", now.AddMinutes(10));
-
-        Assert.True(user.ConsumeCalendarOAuth("nonce-1", now));
-        Assert.False(user.ConsumeCalendarOAuth("nonce-1", now));
-    }
-
-    [Fact]
-    public void An_expired_or_foreign_nonce_fails_and_cancels_the_start()
-    {
-        var user = UserGroqSettingsTests.NewUser();
-        var now = DateTime.UtcNow;
-
-        user.StartCalendarOAuth("nonce-1", now.AddMinutes(10));
-        Assert.False(user.ConsumeCalendarOAuth("otro", now));
-        Assert.Null(user.CalendarOAuthNonce);
-
-        user.StartCalendarOAuth("nonce-2", now.AddMinutes(10));
-        Assert.False(user.ConsumeCalendarOAuth("nonce-2", now.AddMinutes(11)));
-    }
 }

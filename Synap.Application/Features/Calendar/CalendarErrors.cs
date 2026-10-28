@@ -11,9 +11,6 @@ public static class CalendarErrors
 {
     public static readonly Error UserNotFound = Error.NotFound("Usuario no encontrado.");
 
-    public static readonly Error GoogleNotAvailable =
-        Error.Validation("La conexión con Google Calendar no está disponible. Puedes conectar un calendario CalDAV.");
-
     public static readonly Error ServerUrlInvalid =
         Error.Validation("Indica una dirección válida del servidor CalDAV o de tu calendario.");
 

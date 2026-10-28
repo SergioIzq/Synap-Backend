@@ -60,7 +60,7 @@ public class GroqKeyIsolationTests
             var settingsB = await new GetSettingsQueryHandler(
                     new UserWriteRepository(context), new StaticUserContext(userB),
                     new Synap.Infrastructure.Persistence.Data.Calendar.CalendarConnectionReadRepository(context),
-                    _options, Microsoft.Extensions.Options.Options.Create(new Synap.Application.Features.Calendar.GoogleCalendarOptions()))
+                    _options)
                 .Handle(new GetSettingsQuery(), default);
             Assert.False(settingsB.Value.Ai.HasGroqKey);
             Assert.Null(settingsB.Value.Ai.GroqKeyMasked);

@@ -10,14 +10,13 @@ using Xunit;
 namespace Synap.IntegrationTests;
 
 /// <summary>
-/// calendar-integration tarea 1.8: `GET /api/settings` dice si Google está disponible y el estado de
-/// la conexión, y nunca una credencial (specs/calendar-integration "Estado de la conexión").
+/// `GET /api/settings` devuelve el estado de la conexión de calendario sin ninguna credencial
+/// (specs/calendar-integration "Estado de la conexión").
 /// </summary>
 [Collection(ApiCollection.Name)]
 public class CalendarSettingsApiTests
 {
-    private const string RefreshToken = "1//refresh-que-no-debe-salir";
-    private const string AccessToken = "ya29.acceso-que-no-debe-salir";
+    private const string CalDavPassword = "app-pass-que-no-debe-salir";
 
     private readonly ApiFixture _api;
 
@@ -35,31 +34,30 @@ public class CalendarSettingsApiTests
         => (await (await client.GetAsync("/api/settings")).ReadJsonAsync()).GetProperty("value").GetProperty("calendar");
 
     [Fact]
-    public async Task Without_a_calendar_it_offers_google_and_shows_no_connection()
+    public async Task Without_a_calendar_there_is_no_connection()
     {
         var (client, _) = await SignedInAsync();
 
         var calendar = await CalendarOfAsync(client);
 
-        Assert.True(calendar.GetProperty("googleCalendarAvailable").GetBoolean());
+        Assert.False(calendar.TryGetProperty("googleCalendarAvailable", out _));
         Assert.True(!calendar.TryGetProperty("connection", out var connection) || connection.ValueKind == JsonValueKind.Null);
     }
 
     [Fact]
-    public async Task A_connection_shows_provider_account_and_since_but_never_credentials()
+    public async Task A_caldav_connection_shows_provider_account_and_since_but_never_credentials()
     {
         var (client, userId) = await SignedInAsync();
-        await CalendarApiSupport.ConnectGoogleAsync(_api, userId, "sergio@gmail.com", RefreshToken, AccessToken);
+        await CalendarApiSupport.ConnectCalDavAsync(_api, userId, "sergio@fastmail.com", "https://caldav.fastmail.com/cal/", CalDavPassword);
 
         var raw = await (await client.GetAsync("/api/settings")).Content.ReadAsStringAsync();
         var connection = (await CalendarOfAsync(client)).GetProperty("connection");
 
-        Assert.Equal("google", connection.GetProperty("provider").GetString());
-        Assert.Equal("sergio@gmail.com", connection.GetProperty("account").GetString());
+        Assert.Equal("caldav", connection.GetProperty("provider").GetString());
+        Assert.Equal("sergio@fastmail.com", connection.GetProperty("account").GetString());
         Assert.True(connection.TryGetProperty("connectedAt", out _));
         Assert.False(connection.GetProperty("needsReconnect").GetBoolean());
-        Assert.DoesNotContain(RefreshToken, raw);
-        Assert.DoesNotContain(AccessToken, raw);
+        Assert.DoesNotContain(CalDavPassword, raw);
         Assert.DoesNotContain("credentials", raw, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -67,7 +65,7 @@ public class CalendarSettingsApiTests
     public async Task A_connection_marked_for_reconnect_says_so()
     {
         var (client, userId) = await SignedInAsync();
-        await CalendarApiSupport.ConnectGoogleAsync(_api, userId, "sergio@gmail.com", RefreshToken, AccessToken, needsReconnect: true);
+        await CalendarApiSupport.ConnectCalDavAsync(_api, userId, "sergio@fastmail.com", "https://caldav.fastmail.com/cal/", CalDavPassword, needsReconnect: true);
 
         var connection = (await CalendarOfAsync(client)).GetProperty("connection");
 
@@ -88,14 +86,10 @@ internal static class CalendarApiSupport
         return user.Id.Value;
     }
 
-    public static Task ConnectGoogleAsync(
-        ApiFixture api, Guid userId, string account, string refreshToken, string accessToken, bool needsReconnect = false)
-        => ConnectAsync(api, userId, CalendarProvider.Google, account, "primary",
-            new CalendarCredentials.Google(refreshToken, accessToken, DateTime.UtcNow.AddHours(1)), needsReconnect);
-
-    public static Task ConnectCalDavAsync(ApiFixture api, Guid userId, string account, string calendarUrl, string password)
+    public static Task ConnectCalDavAsync(
+        ApiFixture api, Guid userId, string account, string calendarUrl, string password, bool needsReconnect = false)
         => ConnectAsync(api, userId, CalendarProvider.CalDav, account, calendarUrl,
-            new CalendarCredentials.CalDav(account, password), needsReconnect: false);
+            new CalendarCredentials.CalDav(account, password), needsReconnect);
 
     public static async Task<CalendarConnection?> ConnectionOfAsync(ApiFixture api, Guid userId)
     {

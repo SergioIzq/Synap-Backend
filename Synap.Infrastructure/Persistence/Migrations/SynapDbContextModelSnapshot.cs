@@ -278,15 +278,6 @@ namespace Synap.Infrastructure.Persistence.Migrations
                         .HasColumnType("date")
                         .HasColumnName("briefing_last_resolved_on");
 
-                    b.Property<DateTime?>("CalendarOAuthExpiresAt")
-                        .HasColumnType("timestamp without time zone")
-                        .HasColumnName("calendar_oauth_expires_at");
-
-                    b.Property<string>("CalendarOAuthNonce")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("calendar_oauth_nonce");
-
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasMaxLength(255)

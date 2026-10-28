@@ -108,18 +108,12 @@ public static class DependencyInjection
         services.AddSingleton<WithheldBriefingRecorder>();
         services.AddHostedService<BriefingSweepHostedService>();
 
-        // El calendario (calendar-integration design.md Decisión 1): un puerto, un despachador y un
-        // adaptador por proveedor. Sin GoogleCalendar:ClientId solo se ofrece CalDAV.
-        services.Configure<GoogleCalendarOptions>(configuration.GetSection(GoogleCalendarOptions.SectionName));
+        // El calendario (calendar-integration design.md Decisión 1).
         services.AddSingleton<CalendarCredentialsProtector>();
-        services.AddHttpClient<GoogleCalendarClient>(client => client.Timeout = TimeSpan.FromSeconds(15));
-        // La URL CalDAV la escribe el usuario: el handler rechaza la red interna (design.md Decisión 5).
+        // La URL CalDAV la escribe el usuario: el handler rechaza la red interna.
         services.AddSingleton<CalDavNetworkGuard>();
         services.AddHttpClient<CalDavCalendarClient>(client => client.Timeout = TimeSpan.FromSeconds(15))
             .ConfigurePrimaryHttpMessageHandler(sp => sp.GetRequiredService<CalDavNetworkGuard>().CreateHandler());
-        services.AddTransient<ICalendarProviderClient>(sp => sp.GetRequiredService<GoogleCalendarClient>());
-        services.AddTransient<IGoogleCalendarAuthorization>(sp => sp.GetRequiredService<GoogleCalendarClient>());
-        services.AddSingleton<GoogleOAuthState>();
         services.AddTransient<ICalendarProviderClient>(sp => sp.GetRequiredService<CalDavCalendarClient>());
         services.AddTransient<ICalDavDiscovery>(sp => sp.GetRequiredService<CalDavCalendarClient>());
         services.AddScoped<ICalendarReader, CalendarReader>();

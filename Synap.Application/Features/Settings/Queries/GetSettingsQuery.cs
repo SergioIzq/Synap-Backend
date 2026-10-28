@@ -16,20 +16,17 @@ public sealed class GetSettingsQueryHandler : IQueryHandler<GetSettingsQuery, Se
     private readonly IUserContext _userContext;
     private readonly ICalendarConnectionReadRepository _calendarConnections;
     private readonly AiOptions _aiOptions;
-    private readonly GoogleCalendarOptions _googleCalendarOptions;
 
     public GetSettingsQueryHandler(
         IUserWriteRepository userWriteRepository,
         IUserContext userContext,
         ICalendarConnectionReadRepository calendarConnections,
-        IOptions<AiOptions> aiOptions,
-        IOptions<GoogleCalendarOptions> googleCalendarOptions)
+        IOptions<AiOptions> aiOptions)
     {
         _userWriteRepository = userWriteRepository;
         _userContext = userContext;
         _calendarConnections = calendarConnections;
         _aiOptions = aiOptions.Value;
-        _googleCalendarOptions = googleCalendarOptions.Value;
     }
 
     public async Task<Result<SettingsResponse>> Handle(GetSettingsQuery request, CancellationToken cancellationToken)
@@ -46,6 +43,6 @@ public sealed class GetSettingsQueryHandler : IQueryHandler<GetSettingsQuery, Se
             user.Email.Value,
             AiSettingsResponse.From(user, _aiOptions.DefaultGroqModel),
             BriefingSettingsResponse.From(user),
-            CalendarSettingsResponse.From(calendar, _googleCalendarOptions.IsAvailable)));
+            CalendarSettingsResponse.From(calendar)));
     }
 }

@@ -1,6 +1,5 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using SergioIzq.Domain.Kernel.Interfaces;
 using Synap.Application.Features.Calendar;
 using Synap.Domain;
@@ -101,28 +100,6 @@ public class CalendarIsolationTests
         }
     }
 
-    /// <summary>calendar-integration tarea 1.2: el nonce de OAuth se guarda en `users`.</summary>
-    [Fact]
-    public async Task The_oauth_nonce_round_trips()
-    {
-        var (userA, _) = await CreateUsersAsync();
-        var expiresAt = new DateTime(2026, 10, 22, 10, 10, 0, DateTimeKind.Utc);
-
-        await using (var context = _fixture.CreateContext())
-        {
-            var user = await new UserWriteRepository(context).GetByIdAsync(userA, default);
-            user!.StartCalendarOAuth("nonce-abc", expiresAt);
-            await context.SaveChangesAsync();
-        }
-
-        await using (var context = _fixture.CreateContext())
-        {
-            var user = await new UserWriteRepository(context).GetByIdAsync(userA, default);
-            Assert.Equal("nonce-abc", user!.CalendarOAuthNonce);
-            Assert.Equal(expiresAt, user.CalendarOAuthExpiresAt);
-        }
-    }
-
     private static Synap.Shared.Domain.ValueObjects.Ids.UserId UserIdOf(Guid id) =>
         Synap.Shared.Domain.ValueObjects.Ids.UserId.CreateFromDatabase(id);
 
@@ -144,11 +121,7 @@ public class CalendarIsolationTests
             new CalendarConnectionWriteRepository(context),
             new ContextUnitOfWork(context),
             new CalendarCredentialsProtector(_protector),
-            [
-                new GoogleCalendarClient(
-                    new HttpClient(calDav), Options.Create(new GoogleCalendarOptions()), NullLogger<GoogleCalendarClient>.Instance),
-                new CalDavCalendarClient(new HttpClient(calDav), NullLogger<CalDavCalendarClient>.Instance),
-            ],
+            [new CalDavCalendarClient(new HttpClient(calDav), NullLogger<CalDavCalendarClient>.Instance)],
             NullLogger<CalendarReader>.Instance);
 
     private async Task<(Guid UserA, Guid UserB)> CreateUsersAsync()

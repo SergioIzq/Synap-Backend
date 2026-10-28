@@ -21,33 +21,15 @@ public class CalendarDisconnectApiTests
     }
 
     [Fact]
-    public async Task Disconnecting_google_deletes_the_connection_and_revokes_the_token()
+    public async Task Disconnecting_caldav_deletes_the_connection()
     {
         var (client, userId) = await SignedInAsync();
-        var refresh = $"refresh-{Guid.NewGuid():N}";
-        await CalendarApiSupport.ConnectGoogleAsync(_api, userId, "sergio@gmail.com", refresh, "access");
+        await CalendarApiSupport.ConnectCalDavAsync(_api, userId, "sergio@fastmail.com", "https://caldav.fastmail.com/cal/", "pass");
 
         var response = await client.DeleteAsync("/api/settings/calendar");
 
         response.EnsureSuccessStatusCode();
         Assert.Null(await CalendarApiSupport.ConnectionOfAsync(_api, userId));
-        Assert.Contains(refresh, _api.GoogleCalendar.Revoked);
-    }
-
-    /// <summary>specs "Revocación fallida en Google": se borra igual y queda registrado.</summary>
-    [Fact]
-    public async Task A_failed_revocation_does_not_block_the_disconnection()
-    {
-        var (client, userId) = await SignedInAsync();
-        var refresh = $"refresh-{Guid.NewGuid():N}";
-        _api.GoogleCalendar.RevocationFails[refresh] = true;
-        await CalendarApiSupport.ConnectGoogleAsync(_api, userId, "sergio@gmail.com", refresh, "access");
-
-        var response = await client.DeleteAsync("/api/settings/calendar");
-
-        response.EnsureSuccessStatusCode();
-        Assert.Null(await CalendarApiSupport.ConnectionOfAsync(_api, userId));
-        Assert.Contains(_api.Logs.Records, m => m.Contains("revocar") && m.Contains(userId.ToString()));
     }
 
     /// <summary>specs "Recordatorios conservados".</summary>

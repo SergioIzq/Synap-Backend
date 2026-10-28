@@ -63,12 +63,6 @@ public sealed class User : AbsEntity<UserId>
 
     public bool HasTelegram => TelegramChatId is not null;
 
-    // El inicio en curso de la conexión con Google (calendar-integration design.md Decisión 3):
-    // un nonce de un solo uso y su caducidad, con el mismo patrón que TelegramLinkToken. La
-    // conexión en sí vive en CalendarConnection.
-    public string? CalendarOAuthNonce { get; private set; }
-    public DateTime? CalendarOAuthExpiresAt { get; private set; }
-
     // The morning briefing (daily-briefing design.md Decision 3). Off until asked for, so a null
     // hour is the same as off; the date is the last local day a briefing was *resolved* for this
     // user - sent, or found to have nothing to report - which is what stops a second one that day.
@@ -264,29 +258,4 @@ public sealed class User : AbsEntity<UserId>
         ClearTelegramLink();
     }
 
-    /// <summary>Empieza una conexión con Google; sustituye cualquier inicio anterior.</summary>
-    public void StartCalendarOAuth(string nonce, DateTime expiresAtUtc)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(nonce);
-
-        CalendarOAuthNonce = nonce;
-        CalendarOAuthExpiresAt = expiresAtUtc;
-    }
-
-    /// <summary>
-    /// Consume el nonce: true solo si coincide con el inicio en curso y no ha caducado. Tanto si
-    /// coincide como si no, el inicio en curso deja de servir, para que una respuesta capturada no
-    /// se pueda repetir.
-    /// </summary>
-    public bool ConsumeCalendarOAuth(string? nonce, DateTime nowUtc)
-    {
-        var valid = CalendarOAuthNonce is not null
-            && CalendarOAuthExpiresAt is { } expiresAt
-            && nowUtc <= expiresAt
-            && string.Equals(CalendarOAuthNonce, nonce, StringComparison.Ordinal);
-
-        CalendarOAuthNonce = null;
-        CalendarOAuthExpiresAt = null;
-        return valid;
-    }
 }

@@ -7,8 +7,8 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Synap.Api.Telegram;
-using Synap.Shared.Application.Interfaces;
 using Synap.Application.Features.Calendar;
+using Synap.Shared.Application.Interfaces;
 using Npgsql;
 using System.Net;
 using System.Net.Http.Headers;
@@ -62,13 +62,9 @@ public sealed class ApiFixture : IAsyncLifetime
     /// </summary>
     public CalendarReaderFake CalendarEvents { get; } = new();
 
-    /// <summary>Hace de Google en el flujo OAuth (calendar-integration tarea 1.9).</summary>
-    public ApiGoogleCalendarFake GoogleCalendar { get; } = new();
-
     /// <summary>Hace de servidor CalDAV al conectar (calendar-integration tarea 1.10).</summary>
     public ApiCalDavDiscoveryFake CalDav { get; } = new();
 
-    /// <summary>La URL de la web por defecto (AppOptions), a la que vuelve el usuario desde Google.</summary>
     public const string PublicBaseUrl = "http://localhost:4200";
 
     /// <summary>Everything the API logged, so tests can assert on records the response hides.</summary>
@@ -90,10 +86,6 @@ public sealed class ApiFixture : IAsyncLifetime
             builder.UseSetting("Telegram:BotToken", "test-bot-token");
             builder.UseSetting("Telegram:WebhookSecret", TelegramWebhookSecret);
             builder.UseSetting("Telegram:BotUsername", "SynapTestBot");
-            // Google Calendar disponible, pero sobre el fake de abajo: nada sale hacia Google.
-            builder.UseSetting("GoogleCalendar:ClientId", "test-client-id");
-            builder.UseSetting("GoogleCalendar:ClientSecret", "test-client-secret");
-            builder.UseSetting("GoogleCalendar:RedirectUri", "https://api.synap.test/api/calendar/google/callback");
             builder.ConfigureServices(services => services.AddSingleton<IStartupFilter, FakeRemoteIpStartupFilter>());
             builder.ConfigureTestServices(services =>
             {
@@ -105,8 +97,6 @@ public sealed class ApiFixture : IAsyncLifetime
                 services.AddSingleton<ITelegramSender>(Telegram);
                 services.RemoveAll<ICalendarReader>();
                 services.AddSingleton<ICalendarReader>(CalendarEvents);
-                services.RemoveAll<IGoogleCalendarAuthorization>();
-                services.AddSingleton<IGoogleCalendarAuthorization>(GoogleCalendar);
                 services.RemoveAll<ICalDavDiscovery>();
                 services.AddSingleton<ICalDavDiscovery>(CalDav);
                 // No suppression window: the host is shared by the whole run, so a rejection

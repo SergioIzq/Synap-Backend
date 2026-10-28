@@ -58,15 +58,15 @@ public class CalDavConnectApiTests
     public async Task Each_failure_has_its_message_and_keeps_the_previous_connection(string password, string message)
     {
         var (client, userId) = await SignedInAsync();
-        await CalendarApiSupport.ConnectGoogleAsync(_api, userId, "sergio@gmail.com", "refresh", "access");
+        await CalendarApiSupport.ConnectCalDavAsync(_api, userId, "sergio@fastmail.com", "https://caldav.fastmail.com/prev/", "prev-pass");
 
         var response = await ConnectAsync(client, Server, "sergio", password);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Contains(message, await response.ErrorMessageAsync());
         var connection = await CalendarApiSupport.ConnectionOfAsync(_api, userId);
-        Assert.Equal(CalendarProvider.Google, connection!.Provider);
-        Assert.Equal("sergio@gmail.com", connection.AccountLabel);
+        Assert.Equal(CalendarProvider.CalDav, connection!.Provider);
+        Assert.Equal("sergio@fastmail.com", connection.AccountLabel);
     }
 
     /// <summary>specs "URL sin HTTPS": se rechaza sin contactar con el servidor.</summary>
@@ -99,7 +99,7 @@ public class CalDavConnectApiTests
     public async Task Connecting_again_clears_the_reconnect_mark()
     {
         var (client, userId) = await SignedInAsync();
-        await CalendarApiSupport.ConnectGoogleAsync(_api, userId, "sergio@gmail.com", "refresh", "access", needsReconnect: true);
+        await CalendarApiSupport.ConnectCalDavAsync(_api, userId, "sergio@fastmail.com", "https://caldav.fastmail.com/prev/", "prev-pass", needsReconnect: true);
 
         (await ConnectAsync(client, Server, "sergio", "app-pass")).EnsureSuccessStatusCode();
 

@@ -32,6 +32,5 @@ public sealed record CalendarEvent(
 /// <summary>De dónde viene la conexión. Solo lo conocen la conexión y el despachador de lectura.</summary>
 public enum CalendarProvider
 {
-    Google,
     CalDav,
 }

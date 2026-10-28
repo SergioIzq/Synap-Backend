@@ -5,6 +5,7 @@ using SergioIzq.AspNetCore.Kernel.Controllers;
 using Synap.Application.Features.Reminders.Commands;
 using Synap.Application.Features.Briefing.Commands;
 using Synap.Application.Features.Calendar.Commands;
+
 using Synap.Application.Features.Settings.Commands;
 using Synap.Application.Features.Settings.Queries;
 
@@ -79,11 +80,6 @@ public class SettingsController : AbsController
         => await SendAndHandleAsync(new DisconnectTelegramCommand());
 
     // ---- El calendario (specs/calendar-integration) ----
-
-    /// <summary>Empieza la conexión con Google: devuelve la URL de consentimiento.</summary>
-    [HttpPost("calendar/google/start")]
-    public async Task<IActionResult> StartGoogleCalendar()
-        => await SendAndHandleAsync(new StartGoogleCalendarCommand());
 
     /// <summary>Conecta un CalDAV tras comprobarlo contra el servidor; un fallo conserva la conexión anterior.</summary>
     [HttpPut("calendar/caldav")]

@@ -18,15 +18,6 @@ public abstract record CalendarCredentials
 
     public abstract CalendarProvider Provider { get; }
 
-    /// <summary>El refresh token y el último access token con su caducidad (design.md Decisión 3).</summary>
-    public sealed record Google(string RefreshToken, string? AccessToken = null, DateTime? AccessTokenExpiresAt = null)
-        : CalendarCredentials
-    {
-        public override CalendarProvider Provider => CalendarProvider.Google;
-
-        public override string ToString() => "Google { *** }";
-    }
-
     public sealed record CalDav(string Username, string Password) : CalendarCredentials
     {
         public override CalendarProvider Provider => CalendarProvider.CalDav;
@@ -59,7 +50,6 @@ public sealed class CalendarCredentialsProtector
 
     public string Protect(CalendarCredentials credentials) => _secretProtector.Protect(credentials switch
     {
-        CalendarCredentials.Google google => JsonSerializer.Serialize(google, Json),
         CalendarCredentials.CalDav calDav => JsonSerializer.Serialize(calDav, Json),
         _ => throw new ArgumentOutOfRangeException(nameof(credentials)),
     });
@@ -75,7 +65,6 @@ public sealed class CalendarCredentialsProtector
         {
             return provider switch
             {
-                CalendarProvider.Google => Validated(JsonSerializer.Deserialize<CalendarCredentials.Google>(json, Json)),
                 CalendarProvider.CalDav => Validated(JsonSerializer.Deserialize<CalendarCredentials.CalDav>(json, Json)),
                 _ => null,
             };
@@ -88,7 +77,6 @@ public sealed class CalendarCredentialsProtector
 
     private static CalendarCredentials? Validated(CalendarCredentials? credentials) => credentials switch
     {
-        CalendarCredentials.Google { RefreshToken: var token } when string.IsNullOrWhiteSpace(token) => null,
         CalendarCredentials.CalDav { Username: var user, Password: var password }
             when string.IsNullOrWhiteSpace(user) || string.IsNullOrEmpty(password) => null,
         _ => credentials,

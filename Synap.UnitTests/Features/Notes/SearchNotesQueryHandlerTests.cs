@@ -22,6 +22,10 @@ public class SearchNotesQueryHandlerTests
 
         public Task<IReadOnlyList<string>> ListTagsAsync(Guid userId, CancellationToken cancellationToken = default)
             => Task.FromResult<IReadOnlyList<string>>([]);
+
+        public Task<IReadOnlyList<(Guid NoteId, string TagName)>> GetTagsByNoteIdsAsync(
+            Guid userId, IReadOnlyList<Guid> noteIds, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<(Guid, string)>>([]);
     }
 
     private readonly RecordingRepository _repository = new();

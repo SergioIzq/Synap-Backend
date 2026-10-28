@@ -415,5 +415,17 @@ public class BriefingContentServiceTests
             Limits.Add(limit);
             return Task.FromResult(Pending);
         }
+
+        public Task<IReadOnlyList<Guid>> ListRecentAnchorIdsAsync(
+            Guid userId, DateTime recentSinceUtc, int limit, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<Guid>>([]);
+
+        public Task<IReadOnlyList<Guid>> ListDormantCandidateIdsAsync(
+            Guid userId, DateTime dormantBeforeUtc, DateTime cooldownBeforeUtc, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<Guid>>([]);
+
+        public Task<IReadOnlyList<BriefingNoteDetail>> ListNoteDetailsByIdsAsync(
+            Guid userId, IReadOnlyList<Guid> noteIds, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<BriefingNoteDetail>>([]);
     }
 }

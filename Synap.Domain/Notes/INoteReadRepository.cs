@@ -10,6 +10,14 @@ public interface INoteReadRepository
 
     /// <summary>The user's tag names that are on at least one note, alphabetically.</summary>
     Task<IReadOnlyList<string>> ListTagsAsync(Guid userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Tags por nota para un conjunto de ids del usuario. Solo devuelve filas cuya nota
+    /// pertenece a userId (seguridad de aislamiento). Usado para calcular el tema común en
+    /// GetNoteConnectionsQueryHandler (smart-resurfacing, Decisión 1).
+    /// </summary>
+    Task<IReadOnlyList<(Guid NoteId, string TagName)>> GetTagsByNoteIdsAsync(
+        Guid userId, IReadOnlyList<Guid> noteIds, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

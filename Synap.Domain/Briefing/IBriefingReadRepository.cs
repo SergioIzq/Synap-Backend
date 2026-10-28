@@ -35,4 +35,33 @@ public interface IBriefingReadRepository
     /// </summary>
     Task<BriefingSection<BriefingNote>> ListPendingNotesAsync(
         Guid userId, DateTime pausedBeforeUtc, DateTime nowUtc, int limit, CancellationToken cancellationToken = default);
+
+    // ── Smart-resurfacing (smart-resurfacing design.md Decisión 5) ──────────────────────────
+
+    /// <summary>
+    /// Las notas del usuario editadas o creadas dentro de <paramref name="recentSinceUtc"/>,
+    /// las <paramref name="limit"/> más recientes. Sirven como motivos (anclas) para el cálculo
+    /// de similaridad con las candidatas.
+    /// </summary>
+    Task<IReadOnlyList<Guid>> ListRecentAnchorIdsAsync(
+        Guid userId, DateTime recentSinceUtc, int limit, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Ids de las notas del usuario sin estado cuya última actividad
+    /// (MAX(updated_at, last_viewed_at, last_resurfaced_at)) es anterior a <paramref name="dormantBeforeUtc"/>
+    /// y que no han sido rescatadas desde <paramref name="cooldownBeforeUtc"/>
+    /// (o nunca). No se limitan en número: se pasan todas al ai-service.
+    /// </summary>
+    Task<IReadOnlyList<Guid>> ListDormantCandidateIdsAsync(
+        Guid userId, DateTime dormantBeforeUtc, DateTime cooldownBeforeUtc, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Devuelve id, título, contenido y última actividad de las notas del usuario con los ids dados,
+    /// en el orden que devuelve Postgres. Se usa para construir los datos de las notas rescatadas y sus motivos.
+    /// </summary>
+    Task<IReadOnlyList<BriefingNoteDetail>> ListNoteDetailsByIdsAsync(
+        Guid userId, IReadOnlyList<Guid> noteIds, CancellationToken cancellationToken = default);
 }
+
+/// <summary>Datos mínimos de una nota para construir la sección de rescate del briefing.</summary>
+public sealed record BriefingNoteDetail(Guid Id, string? Title, string Content, DateTime LastActivity);

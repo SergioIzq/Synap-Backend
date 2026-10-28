@@ -31,6 +31,19 @@ public sealed class Note : AbsEntity<NoteId>
     public DateTime UpdatedAt { get; private set; }
 
     /// <summary>
+    /// Cuándo el dueño abrió el detalle de esta nota por última vez desde la web. Null mientras
+    /// no se haya registrado ninguna apertura (smart-resurfacing, Decisión 4). No lo mueve nada
+    /// salvo <see cref="MarkViewed"/>.
+    /// </summary>
+    public DateTime? LastViewedAt { get; private set; }
+
+    /// <summary>
+    /// Cuándo esta nota apareció por última vez en la sección «Para retomar» de un briefing
+    /// entregado. Null mientras no haya sido rescatada (smart-resurfacing, Decisión 6).
+    /// </summary>
+    public DateTime? LastResurfacedAt { get; private set; }
+
+    /// <summary>
     /// What this note is as work, or null when it is material rather than work - a bookmark, a
     /// snippet, a captured idea (note-status design.md Decision 1). Null is the default and is
     /// never treated as a kind of work.
@@ -79,6 +92,25 @@ public sealed class Note : AbsEntity<NoteId>
     {
         Status = status;
         StatusChangedAt = status is null ? null : DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Registra que el dueño ha abierto esta nota ahora. Solo mueve <see cref="LastViewedAt"/>;
+    /// no toca <see cref="UpdatedAt"/>, <see cref="Status"/> ni <see cref="StatusChangedAt"/>
+    /// (smart-resurfacing spec «Abrir no es editar»).
+    /// </summary>
+    public void MarkViewed()
+    {
+        LastViewedAt = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Marks this note as resurfaced now. Called by <c>BriefingDispatcher</c> after a successful
+    /// delivery (smart-resurfacing, Decisión 6). Does not touch any other field.
+    /// </summary>
+    public void MarkResurfaced()
+    {
+        LastResurfacedAt = DateTime.UtcNow;
     }
 
     public void AddTag(Tag tag)

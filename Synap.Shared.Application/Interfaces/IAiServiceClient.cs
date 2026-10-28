@@ -55,4 +55,29 @@ public interface IAiServiceClient
 
     /// <summary>Validates a Groq key and lists the chat models it can use, in one call.</summary>
     Task<LlmModelsResult> ListModelsAsync(string groqApiKey, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Conexiones de una nota filtradas por umbral (smart-resurfacing, Decisión 1).
+    /// Devuelve <see cref="NoteConnectionStatus.Pending"/> cuando la nota aún no tiene embedding
+    /// del modelo actual. Lanza <see cref="HttpRequestException"/> si el ai-service no responde
+    /// (el caller decide si propagar o traducir a 503).
+    /// </summary>
+    Task<NoteConnectionsResult> GetConnectionsAsync(
+        Guid noteId,
+        Guid userId,
+        double minSimilarity,
+        int limit,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Pares (candidata, motivo) para el rescate del briefing (smart-resurfacing, Decisión 5).
+    /// Devuelve vacío cuando alguna lista está vacía o el ai-service no responde.
+    /// </summary>
+    Task<IReadOnlyList<SimilarityPair>> GetSimilarityPairsAsync(
+        Guid userId,
+        IReadOnlyList<Guid> anchorIds,
+        IReadOnlyList<Guid> candidateIds,
+        double minSimilarity,
+        int limit,
+        CancellationToken cancellationToken = default);
 }

@@ -365,4 +365,72 @@ public class AiServiceClientTests
         Assert.Null(failed.PartialContext);
         Assert.Null(failed.Scope);
     }
+
+    // --- smart-resurfacing 1.5: GetConnectionsAsync y GetSimilarityPairsAsync ---
+
+    [Fact]
+    public async Task GetConnectionsAsync_maps_indexed_true_with_notes()
+    {
+        var noteId = Guid.NewGuid();
+        var connId = Guid.NewGuid();
+        var handler = FakeHttpMessageHandler.ReturningJson(HttpStatusCode.OK, $$"""
+            {"indexed": true, "notes": [{"id": "{{connId}}", "title": "Kubernetes", "content": "contenido", "type": "Text", "similarity": 0.82}]}
+            """);
+
+        var result = await CreateClient(handler).GetConnectionsAsync(noteId, Guid.NewGuid(), 0.55, 5);
+
+        Assert.Equal(NoteConnectionStatus.Ready, result.Status);
+        Assert.Single(result.Notes);
+        Assert.Equal(connId, result.Notes[0].Id);
+        Assert.Equal(0.82, result.Notes[0].Similarity, precision: 5);
+    }
+
+    [Fact]
+    public async Task GetConnectionsAsync_maps_indexed_false_as_pending()
+    {
+        var handler = FakeHttpMessageHandler.ReturningJson(HttpStatusCode.OK, """{"indexed": false, "notes": []}""");
+
+        var result = await CreateClient(handler).GetConnectionsAsync(Guid.NewGuid(), Guid.NewGuid(), 0.55, 5);
+
+        Assert.Equal(NoteConnectionStatus.Pending, result.Status);
+        Assert.Empty(result.Notes);
+    }
+
+    [Fact]
+    public async Task GetConnectionsAsync_throws_HttpRequestException_on_503()
+    {
+        var handler = FakeHttpMessageHandler.ReturningJson(HttpStatusCode.ServiceUnavailable, """{"detail": "error"}""");
+
+        await Assert.ThrowsAsync<HttpRequestException>(
+            () => CreateClient(handler).GetConnectionsAsync(Guid.NewGuid(), Guid.NewGuid(), 0.55, 5));
+    }
+
+    [Fact]
+    public async Task GetSimilarityPairsAsync_maps_pairs_correctly()
+    {
+        var candidateId = Guid.NewGuid();
+        var anchorId = Guid.NewGuid();
+        var handler = FakeHttpMessageHandler.ReturningJson(HttpStatusCode.OK, $$"""
+            [{"candidate_id": "{{candidateId}}", "anchor_id": "{{anchorId}}", "similarity": 0.77}]
+            """);
+
+        var pairs = await CreateClient(handler).GetSimilarityPairsAsync(
+            Guid.NewGuid(), [anchorId], [candidateId], 0.55, 3);
+
+        Assert.Single(pairs);
+        Assert.Equal(candidateId, pairs[0].CandidateId);
+        Assert.Equal(anchorId, pairs[0].AnchorId);
+        Assert.Equal(0.77, pairs[0].Similarity, precision: 5);
+    }
+
+    [Fact]
+    public async Task GetSimilarityPairsAsync_returns_empty_on_unreachable_service()
+    {
+        var handler = FakeHttpMessageHandler.Throwing(new HttpRequestException("timeout"));
+
+        var pairs = await CreateClient(handler).GetSimilarityPairsAsync(
+            Guid.NewGuid(), [Guid.NewGuid()], [Guid.NewGuid()], 0.55, 3);
+
+        Assert.Empty(pairs);
+    }
 }

@@ -252,6 +252,63 @@ public sealed class AiServiceClient : IAiServiceClient
         }
     }
 
+    public async Task<NoteConnectionsResult> GetConnectionsAsync(
+        Guid noteId,
+        Guid userId,
+        double minSimilarity,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        var url = $"/internal/notes/{noteId}/connections?user_id={userId}&min_similarity={minSimilarity.ToString(System.Globalization.CultureInfo.InvariantCulture)}&limit={limit}";
+        using var response = await _httpClient.GetAsync(url, cancellationToken);
+
+        if (!await AcceptedAsync(response, $"fetching connections of note {noteId}", cancellationToken))
+        {
+            throw new HttpRequestException($"El servicio de análisis respondió {(int)response.StatusCode} al obtener conexiones de la nota {noteId}.");
+        }
+
+        var result = await response.Content.ReadFromJsonAsync<ConnectionsResponse>(cancellationToken)
+            ?? throw new InvalidOperationException("Respuesta vacía del servicio de análisis.");
+
+        var status = result.Indexed ? NoteConnectionStatus.Ready : NoteConnectionStatus.Pending;
+        var notes = result.Notes.Select(n => new RelatedNote(
+            n.Id, n.Title, n.Content,
+            Enum.Parse<NoteType>(n.Type, ignoreCase: true),
+            n.Similarity)).ToList();
+
+        return new NoteConnectionsResult(status, notes);
+    }
+
+    public async Task<IReadOnlyList<SimilarityPair>> GetSimilarityPairsAsync(
+        Guid userId,
+        IReadOnlyList<Guid> anchorIds,
+        IReadOnlyList<Guid> candidateIds,
+        double minSimilarity,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var response = await _httpClient.PostAsJsonAsync(
+                "/internal/notes/similarity-pairs",
+                new SimilarityPairsRequest(userId, anchorIds.ToList(), candidateIds.ToList(), minSimilarity, limit),
+                cancellationToken);
+
+            if (!await AcceptedAsync(response, $"fetching similarity pairs for user {userId}", cancellationToken))
+            {
+                return [];
+            }
+
+            var results = await response.Content.ReadFromJsonAsync<List<SimilarityPairResponse>>(cancellationToken) ?? [];
+            return results.Select(r => new SimilarityPair(r.CandidateId, r.AnchorId, r.Similarity)).ToList();
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+        {
+            _logger.LogWarning(ex, "El servicio de análisis no respondió al calcular pares de similitud para el usuario {UserId} ({Exception})", userId, ex.GetType().Name);
+            return [];
+        }
+    }
+
     // Python sends snake_case statuses; anything unrecognised is treated as unavailable rather
     // than trusted as a real answer.
     private static AssistantAnswerStatus ParseAnswerStatus(string? status) => status switch
@@ -369,4 +426,20 @@ public sealed class AiServiceClient : IAiServiceClient
         [property: JsonPropertyName("snippet")] string Snippet,
         // Absent for a note found by its words alone, and absent from an older AI service.
         [property: JsonPropertyName("similarity")] double? Similarity = null);
+
+    private sealed record ConnectionsResponse(
+        [property: JsonPropertyName("indexed")] bool Indexed,
+        [property: JsonPropertyName("notes")] List<RelatedNoteResponse> Notes);
+
+    private sealed record SimilarityPairsRequest(
+        [property: JsonPropertyName("user_id")] Guid UserId,
+        [property: JsonPropertyName("anchor_ids")] List<Guid> AnchorIds,
+        [property: JsonPropertyName("candidate_ids")] List<Guid> CandidateIds,
+        [property: JsonPropertyName("min_similarity")] double MinSimilarity,
+        [property: JsonPropertyName("limit")] int Limit);
+
+    private sealed record SimilarityPairResponse(
+        [property: JsonPropertyName("candidate_id")] Guid CandidateId,
+        [property: JsonPropertyName("anchor_id")] Guid AnchorId,
+        [property: JsonPropertyName("similarity")] double Similarity);
 }

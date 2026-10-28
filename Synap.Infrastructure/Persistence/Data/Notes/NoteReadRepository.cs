@@ -37,7 +37,7 @@ public sealed class NoteReadRepository : INoteReadRepository
                    n.created_at AS CreatedAt, n.updated_at AS UpdatedAt,
                    n.status AS Status, n.status_changed_at AS StatusChangedAt,
                    n.metadata_title AS MetadataTitle, n.metadata_description AS MetadataDescription,
-                   n.metadata_image_url AS MetadataImageUrl,
+                   n.metadata_image_url AS MetadataImageUrl, n.last_viewed_at AS LastViewedAt,
                    COUNT(*) OVER() AS TotalCount
             FROM notes n, q
             WHERE n.user_id = @UserId
@@ -95,7 +95,7 @@ public sealed class NoteReadRepository : INoteReadRepository
                    n.created_at AS CreatedAt, n.updated_at AS UpdatedAt,
                    n.status AS Status, n.status_changed_at AS StatusChangedAt,
                    n.metadata_title AS MetadataTitle, n.metadata_description AS MetadataDescription,
-                   n.metadata_image_url AS MetadataImageUrl,
+                   n.metadata_image_url AS MetadataImageUrl, n.last_viewed_at AS LastViewedAt,
                    1::bigint AS TotalCount
             FROM notes n
             WHERE n.id = @NoteId AND n.user_id = @UserId
@@ -123,6 +123,32 @@ public sealed class NoteReadRepository : INoteReadRepository
 
         return (await connection.QueryAsync<string>(new CommandDefinition(
             tagsSql, new { UserId = userId }, cancellationToken: cancellationToken))).ToList();
+    }
+
+    public async Task<IReadOnlyList<(Guid NoteId, string TagName)>> GetTagsByNoteIdsAsync(
+        Guid userId, IReadOnlyList<Guid> noteIds, CancellationToken cancellationToken = default)
+    {
+        if (noteIds.Count == 0)
+        {
+            return [];
+        }
+
+        using var connection = _dbConnectionFactory.CreateConnection();
+
+        const string sql = """
+            SELECT nt.note_id AS NoteId, t.name AS Name
+            FROM note_tags nt
+            JOIN tags t ON t.id = nt.tag_id
+            JOIN notes n ON n.id = nt.note_id
+            WHERE nt.note_id = ANY(@NoteIds) AND n.user_id = @UserId
+            """;
+
+        var rows = await connection.QueryAsync<NoteTagRow>(new CommandDefinition(
+            sql,
+            new { NoteIds = noteIds.ToArray(), UserId = userId },
+            cancellationToken: cancellationToken));
+
+        return rows.Select(r => (r.NoteId, r.Name)).ToList();
     }
 
     private static async Task<List<NoteSearchResult>> WithTagsAsync(
@@ -156,7 +182,8 @@ public sealed class NoteReadRepository : INoteReadRepository
                 tagsByNoteId.GetValueOrDefault(r.Id, []),
                 r.MetadataTitle,
                 r.MetadataDescription,
-                r.MetadataImageUrl))
+                r.MetadataImageUrl,
+                r.LastViewedAt))
             .ToList();
     }
 
@@ -210,7 +237,8 @@ public sealed class NoteReadRepository : INoteReadRepository
     private sealed record NoteRow(
         Guid Id, string? Title, string Content, string Type, DateTime CreatedAt, DateTime UpdatedAt,
         string? Status, DateTime? StatusChangedAt,
-        string? MetadataTitle, string? MetadataDescription, string? MetadataImageUrl, long TotalCount);
+        string? MetadataTitle, string? MetadataDescription, string? MetadataImageUrl,
+        DateTime? LastViewedAt, long TotalCount);
 
     private sealed record NoteTagRow(Guid NoteId, string Name);
 }

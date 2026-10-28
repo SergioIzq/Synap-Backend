@@ -215,5 +215,14 @@ public class GroqKeyIsolationTests
             SearchUserIds.Add(userId);
             return Task.FromResult<IReadOnlyList<NoteSearchHit>>([]);
         }
+
+        public Task<NoteConnectionsResult> GetConnectionsAsync(
+            Guid noteId, Guid userId, double minSimilarity, int limit, CancellationToken cancellationToken = default)
+            => Task.FromResult(new NoteConnectionsResult(NoteConnectionStatus.Pending, []));
+
+        public Task<IReadOnlyList<SimilarityPair>> GetSimilarityPairsAsync(
+            Guid userId, IReadOnlyList<Guid> anchorIds, IReadOnlyList<Guid> candidateIds,
+            double minSimilarity, int limit, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<SimilarityPair>>([]);
     }
 }

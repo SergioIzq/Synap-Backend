@@ -13,4 +13,5 @@ public sealed record NoteSearchResult(
     IReadOnlyList<string> Tags,
     string? MetadataTitle,
     string? MetadataDescription,
-    string? MetadataImageUrl);
+    string? MetadataImageUrl,
+    DateTime? LastViewedAt = null);

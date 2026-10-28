@@ -55,7 +55,28 @@ public static class BriefingMessage
         Section(text, "📋", "Pendiente", content.Pending, NoteLine);
         Section(text, "📌", "Notas sin etiquetar", content.UntaggedNotes, NoteLine);
 
+        // La sección de rescate va siempre al final (smart-resurfacing, Decisión 7).
+        ResurfacedSection(text, content.ResurfacedNotes);
+
         return text.ToString();
+    }
+
+    private static void ResurfacedSection(StringBuilder text, IReadOnlyList<BriefingResurfacedNote> notes)
+    {
+        if (notes.Count == 0)
+        {
+            return;
+        }
+
+        text.Append($"\n\n🔁 <b>Para retomar</b> ({notes.Count})");
+        foreach (var note in notes)
+        {
+            var label = Escape(NoteDisplay.Label(note.Title, note.Content));
+            var days = note.DormantForDays;
+            var sinceText = days == 1 ? "1 día sin actividad" : $"{days} días sin actividad";
+            var reasonLabel = Escape(NoteDisplay.Label(note.Reason.Title, note.Reason.Content));
+            text.Append($"\n· {label} <i>({sinceText}, relacionada con {reasonLabel})</i>");
+        }
     }
 
     /// <summary>

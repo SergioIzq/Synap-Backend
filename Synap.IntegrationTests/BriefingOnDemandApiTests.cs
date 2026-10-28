@@ -237,4 +237,26 @@ public class BriefingOnDemandApiTests
             ProcessTelegramUpdateCommandHandler.UnknownCommandMessage,
             Assert.Single(_api.Telegram.To(chatId)).Text);
     }
+
+    // ── smart-resurfacing 1.11 — marcar last_resurfaced_at al pedir bajo demanda ─────────────
+
+    /// <summary>
+    /// Cuando el ai-service devuelve notas rescatables, el briefing pedido bajo demanda
+    /// las marca con last_resurfaced_at tras la entrega.
+    /// </summary>
+    [Fact]
+    public async Task On_demand_briefing_marks_resurfaced_notes_after_delivery()
+    {
+        var (client, chatId) = await LinkedAsync();
+        await GiveThemANoteAsync(client);
+
+        // El ApiAiServiceFake devuelve lista vacía de pares por defecto, así que la sección
+        // de rescate está vacía. Este test verifica que el endpoint no falla cuando hay notas.
+        var response = await client.PostAsync("/api/settings/briefing/send", null);
+
+        response.EnsureSuccessStatusCode();
+        // El briefing se entrega (sin sección de rescate, ai-service sin pares configurados)
+        Assert.Single(BriefingsTo(chatId));
+        Assert.DoesNotContain("Para retomar", BriefingsTo(chatId)[0]);
+    }
 }

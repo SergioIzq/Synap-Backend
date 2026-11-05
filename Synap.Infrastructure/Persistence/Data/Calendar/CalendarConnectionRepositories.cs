@@ -22,13 +22,26 @@ public sealed class CalendarConnectionReadRepository : ICalendarConnectionReadRe
         _context = context;
     }
 
-    public Task<CalendarConnectionSummary?> GetSummaryAsync(Guid userId, CancellationToken cancellationToken = default)
+    public async Task<CalendarConnectionSummary?> GetSummaryAsync(Guid userId, CancellationToken cancellationToken = default)
     {
         var id = UserId.CreateFromDatabase(userId);
-        return _context.Set<CalendarConnection>()
+        var summary = await _context.Set<CalendarConnection>()
             .AsNoTracking()
             .Where(c => c.Id == id)
-            .Select(c => new CalendarConnectionSummary(c.Provider, c.AccountLabel, c.ConnectedAt, c.NeedsReconnectSince))
+            .Select(c => new CalendarConnectionSummary(c.Provider, c.AccountLabel, c.ConnectedAt, c.NeedsReconnectSince, c.CalendarRef, null))
             .FirstOrDefaultAsync(cancellationToken);
+
+        if (summary is null)
+        {
+            return null;
+        }
+
+        // La del calendario activo más atrasado: es desde cuándo puede faltar algo en la copia.
+        var lastSyncedAt = await _context.Set<Domain.Calendar>()
+            .AsNoTracking()
+            .Where(c => c.UserId == id && c.Enabled && c.LastSyncedAt != null)
+            .MinAsync(c => c.LastSyncedAt, cancellationToken);
+
+        return summary with { LastSyncedAt = lastSyncedAt };
     }
 }

@@ -82,6 +82,10 @@ public class BriefingSweepTests
         // No calendar connected unless a test says otherwise, and an AI service that finds nothing:
         // what the briefing was before calendar-integration (task 5.6).
         services.AddSingleton<ICalendarReader>(calendar ?? new CalendarReaderFake());
+        services.AddSingleton<ICalendarSynchronizer>(new CalendarSynchronizerFake
+        {
+            Outcome = calendar?.Result is CalendarReadResult.Ok { State.IsStale: true } ? CalendarSyncOutcome.Failed : CalendarSyncOutcome.Synced,
+        });
         services.AddSingleton<IAiServiceClient>(aiService);
         services.AddScoped<BriefingContentService>();
         services.AddScoped<BriefingDispatcher>();
@@ -184,15 +188,14 @@ public class BriefingSweepTests
     // ---- The calendar (calendar-integration tasks 5.5 and 5.6) ----
 
     /// <summary>
-    /// specs/calendar-integration "A calendar that cannot be read degrades rather than breaks" and
-    /// specs/briefing "The calendar could not be read": the briefing arrives with everything else
-    /// it has, and says nothing at all about the calendar - least of all that the day is free.
+    /// specs/briefing "Proveedor caído al construir el briefing": the briefing arrives with
+    /// everything else it has, and one line saying since when the calendar has not synced.
     /// </summary>
     [Fact]
-    public async Task A_calendar_that_cannot_be_read_still_delivers_the_whole_briefing()
+    public async Task A_calendar_that_cannot_be_synced_still_delivers_the_whole_briefing()
     {
         var calendar = new CalendarReaderFake();
-        calendar.Unavailable();
+        calendar.Stale(DateTime.UtcNow.AddHours(-2));
         var (user, services, telegram, _) = await ArrangeAsync(calendar: calendar);
 
         Assert.Equal(1, await SweepAsync(services));
@@ -201,8 +204,8 @@ public class BriefingSweepTests
         Assert.Equal(ChatId, sent.ChatId);
         // The rest of the briefing is delivered.
         Assert.Contains("Sin etiquetar", sent.Text);
-        // The unavailable calendar adds a one-line notice, not a full events section.
-        Assert.Contains("📅 No se ha podido leer el calendario.", sent.Text);
+        // The stale copy adds a one-line notice, not a full events section.
+        Assert.Contains("📅 El calendario no se sincroniza desde", sent.Text);
         Assert.DoesNotContain("<b>Hoy en tu calendario</b>", sent.Text);
         // The day is resolved: a calendar failure does not cost the user their briefing.
         await using var context = _fixture.CreateContext();
@@ -257,7 +260,7 @@ public class BriefingSweepTests
         // The fake fails for every user – simulates a provider that is down for all.
         // The important thing: both users still receive their briefing.
         var calendar = new CalendarReaderFake();
-        calendar.Unavailable();
+        calendar.Stale(DateTime.UtcNow.AddHours(-2));
         var (userA, servicesA, telegramA, _) = await ArrangeAsync(calendar: calendar);
 
         // Create a second briefing-enabled user in the same database.
@@ -274,7 +277,7 @@ public class BriefingSweepTests
 
         var messages = telegramA.Snapshot();
         Assert.Equal(2, messages.Count);
-        Assert.True(messages.All(m => m.Text.Contains("No se ha podido leer el calendario.")));
+        Assert.True(messages.All(m => m.Text.Contains("El calendario no se sincroniza desde")));
         Assert.True(messages.All(m => m.Text.Contains("Buenos días")));
     }
 

@@ -44,13 +44,10 @@ public class CalDavNetworkGuardTests
     {
         var client = ClientResolving(IPAddress.Parse("192.168.1.20"));
 
-        var read = await client.ReadAsync(
-            new CalendarProviderRequest(
-                Guid.NewGuid(), "https://calendario.example.com/dav/", new CalendarCredentials.CalDav("sergio", "secreto"),
-                DateTime.UtcNow, DateTime.UtcNow.AddDays(1), 10),
-            CancellationToken.None);
+        var read = await client.ListCalendarsAsync(
+            new Uri("https://calendario.example.com/dav/"), new CalendarCredentials.CalDav("sergio", "secreto"), CancellationToken.None);
 
-        Assert.IsType<CalendarReadResult.Unavailable>(read.Result);
+        Assert.Equal(CalendarSyncErrors.Unreachable, Assert.IsType<CalDavResult<IReadOnlyList<RemoteCalendar>>.Failed>(read).Category);
         Assert.Equal(0, _socketsOpened);
     }
 
@@ -117,13 +114,10 @@ public class CalDavNetworkGuardTests
         var client = new CalDavCalendarClient(
             new HttpClient(new FixedHandler((HttpStatusCode)207, huge)), new RecordingLogger<CalDavCalendarClient>());
 
-        var read = await client.ReadAsync(
-            new CalendarProviderRequest(
-                Guid.NewGuid(), "https://calendario.example.com/dav/", new CalendarCredentials.CalDav("sergio", "secreto"),
-                DateTime.UtcNow, DateTime.UtcNow.AddDays(1), 10),
-            CancellationToken.None);
+        var read = await client.ListETagsAsync(
+            new Uri("https://calendario.example.com/dav/"), new CalendarCredentials.CalDav("sergio", "secreto"), CancellationToken.None);
 
-        Assert.IsType<CalendarReadResult.Unavailable>(read.Result);
+        Assert.IsType<CalDavResult<IReadOnlyList<RemoteETag>>.Failed>(read);
     }
 
     private sealed class RedirectingHandler(List<Uri> requested) : HttpMessageHandler

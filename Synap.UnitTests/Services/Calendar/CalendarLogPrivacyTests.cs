@@ -1,18 +1,15 @@
 using Synap.Application.Features.Calendar;
-using Synap.Domain;
 using Synap.Infrastructure.Services.Calendar;
-using Synap.Infrastructure.Services.Secrets;
-using Synap.UnitTests.Features.Settings;
 using System.Net;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace Synap.UnitTests.Services.Calendar;
 
 /// <summary>
-/// Los registros de una lectura fallida llevan usuario, proveedor, estado y causa, y nunca el
-/// cuerpo de la respuesta, un título, una descripción ni una credencial
-/// (design.md Decisión 10; specs/calendar-integration "Los eventos nunca se almacenan").
+/// Lo que el cliente CalDAV devuelve y registra al fallar lleva el estado y una categoría, nunca el
+/// cuerpo de la respuesta, un título, una descripción ni una credencial (calendar-integration
+/// design.md Decisión 10; calendar-store-and-view design.md Decisión 8). La sincronización y los
+/// endpoints, que necesitan Postgres, se comprueban en CalendarSyncLogPrivacyTests.
 /// </summary>
 public class CalendarLogPrivacyTests
 {
@@ -23,79 +20,61 @@ public class CalendarLogPrivacyTests
     /// <summary>Un cuerpo de error que, como hacen algunos servidores, repite lo que no debe salir.</summary>
     private const string LeakyBody = $"{{\"error\":\"server_error\",\"echo\":\"{Title} {Description} {Password}\"}}";
 
-    private readonly CalendarCredentialsProtector _protector =
-        new(new AesGcmSecretProtector(RandomNumberGenerator.GetBytes(32)));
+    private static readonly CalendarCredentials.CalDav Credentials = new("sergio", Password);
+    private static readonly Uri Calendar = new("https://caldav.example.com/dav/cal/");
 
-    private readonly RecordingLogger<CalendarReader> _readerLog = new();
-    private readonly RecordingLogger<CalDavCalendarClient> _calDavLog = new();
-    private readonly FakeCalendarConnectionRepository _connections = new();
+    private readonly RecordingLogger<CalDavCalendarClient> _log = new();
 
-    private CalendarReader Reader(Func<HttpRequestMessage, HttpResponseMessage> responder)
-    {
-        var http = new HttpClient(new Responder(responder));
-        var calDav = new CalDavCalendarClient(http, _calDavLog);
-        return new CalendarReader(_connections, new FakeUnitOfWork(), _protector, [calDav], _readerLog);
-    }
-
-    private Guid Connect(CalendarCredentials credentials)
-    {
-        var userId = Guid.NewGuid();
-        _connections.Add(CalendarConnection.Create(
-            userId, credentials.Provider, "sergio@example.com",
-            "https://caldav.example.com/dav/cal/",
-            _protector.Protect(credentials), DateTime.UtcNow));
-        return userId;
-    }
-
-    private IEnumerable<string> AllRecords => _readerLog.Records.Concat(_calDavLog.Records);
-
-    private void AssertNothingLeaked()
-    {
-        foreach (var secret in new[] { Title, Description, Password, "server_error" })
-        {
-            Assert.DoesNotContain(AllRecords, r => r.Contains(secret, StringComparison.OrdinalIgnoreCase));
-        }
-    }
+    private CalDavCalendarClient Client(Func<HttpRequestMessage, HttpResponseMessage> responder) =>
+        new(new HttpClient(new Responder(responder)), _log);
 
     private static HttpResponseMessage Body(HttpStatusCode status, string body) =>
         new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 
-    [Fact]
-    public async Task A_failed_caldav_read_logs_the_cause_and_nothing_else()
+    private void AssertNothingLeaked(string? cause)
     {
-        var userId = Connect(new CalendarCredentials.CalDav("sergio", Password));
+        foreach (var secret in new[] { Title, Description, Password, "server_error" })
+        {
+            Assert.DoesNotContain(_log.Records, r => r.Contains(secret, StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(secret, cause ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+    }
 
-        var result = await Reader(_ => Body(HttpStatusCode.BadGateway, LeakyBody))
-            .ListEventsAsync(userId, DateTime.UtcNow, DateTime.UtcNow.AddDays(1), 10);
+    [Theory]
+    [InlineData(HttpStatusCode.BadGateway)]
+    [InlineData(HttpStatusCode.Conflict)]
+    public async Task A_failed_sync_report_carries_the_status_and_nothing_else(HttpStatusCode status)
+    {
+        var result = await Client(_ => Body(status, LeakyBody))
+            .SyncCollectionAsync(Calendar, Credentials, "token", CancellationToken.None);
 
-        Assert.IsType<CalendarReadResult.Unavailable>(result);
-        Assert.Contains(AllRecords, r => r.Contains(userId.ToString()) && r.Contains("CalDav") && r.Contains("502"));
-        AssertNothingLeaked();
+        var failed = Assert.IsType<CalDavResult<SyncCollectionChanges>.Failed>(result);
+        Assert.Contains(((int)status).ToString(), failed.Cause);
+        AssertNothingLeaked(failed.Cause);
     }
 
     [Fact]
-    public async Task An_unreadable_caldav_item_is_counted_not_quoted()
+    public async Task A_failed_multiget_carries_the_status_and_nothing_else()
     {
-        var userId = Connect(new CalendarCredentials.CalDav("sergio", Password));
-        var multiStatus = $"""
-            <?xml version="1.0"?>
-            <d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
-              <d:response><d:href>/x.ics</d:href><d:propstat><d:prop>
-                <c:calendar-data>BEGIN:VCALENDAR
-            BEGIN:VEVENT
-            SUMMARY:{Title}
-            DESCRIPTION:{Description}
-            DTSTART:no-es-fecha
-            END:VEVENT
-            END:VCALENDAR</c:calendar-data>
-              </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
-            </d:multistatus>
-            """;
+        var result = await Client(_ => Body(HttpStatusCode.InternalServerError, LeakyBody))
+            .MultigetAsync(Calendar, Credentials, [Calendar + "a.ics"], CancellationToken.None);
 
-        await Reader(_ => Body((HttpStatusCode)207, multiStatus))
-            .ListEventsAsync(userId, DateTime.UtcNow, DateTime.UtcNow.AddDays(1), 10);
+        var failed = Assert.IsType<CalDavResult<MultigetResult>.Failed>(result);
+        AssertNothingLeaked(failed.Cause);
+    }
 
-        AssertNothingLeaked();
+    /// <summary>Un recurso demasiado grande se omite contándolo, sin citar nada de él.</summary>
+    [Fact]
+    public async Task An_oversized_resource_is_counted_not_quoted()
+    {
+        var huge = $"SUMMARY:{Title}\n" + new string('x', CalDavCalendarClient.MaxResponseBytes);
+
+        var result = await Client(_ => Body((HttpStatusCode)207, huge))
+            .MultigetAsync(Calendar, Credentials, [Calendar + "a.ics"], CancellationToken.None);
+
+        Assert.Empty(Assert.IsType<CalDavResult<MultigetResult>.Ok>(result).Value.Resources);
+        Assert.NotEmpty(_log.Records);
+        AssertNothingLeaked(null);
     }
 
     private sealed class Responder(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler

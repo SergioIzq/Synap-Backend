@@ -19,7 +19,7 @@ public class BriefingResurfacingTests
     private readonly FakeResurfacingAi _ai = new();
 
     private BriefingContentService Service(TimeSpan? resurfacingTimeout = null)
-        => new(_repo, new NullCalendarReader(), _ai, resurfacingTimeout: resurfacingTimeout);
+        => new(_repo, new NullCalendarReader(), new FakeCalendarSynchronizer(), _ai, resurfacingTimeout: resurfacingTimeout);
 
     [Fact]
     public async Task Resurfaced_note_appears_when_dormant_and_related_to_recent()
@@ -178,7 +178,7 @@ public class BriefingResurfacingTests
     private sealed class NullCalendarReader : ICalendarReader
     {
         public Task<CalendarReadResult> ListEventsAsync(Guid userId, DateTime fromUtc, DateTime toUtcExclusive,
-            int limit, CancellationToken ct = default)
+            int limit, CalendarScope? scope = null, CancellationToken ct = default)
             => Task.FromResult<CalendarReadResult>(new CalendarReadResult.NotConnected());
     }
 }

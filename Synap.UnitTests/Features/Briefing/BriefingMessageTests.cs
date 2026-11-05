@@ -30,6 +30,9 @@ public class BriefingMessageTests
                     new DateTime(2026, 9, 30, endHourUtc, 30, 0, DateTimeKind.Utc)),
             related);
 
+    private static BriefingEvent In(CalendarScope scope, BriefingEvent entry)
+        => entry with { Event = entry.Event with { Calendar = new CalendarEventSource(Guid.NewGuid(), scope.ToString(), "#3b82f6", scope) } };
+
     private static BriefingContent With(
         IReadOnlyList<BriefingEvent>? events = null,
         int? eventsTotal = null,
@@ -128,36 +131,81 @@ public class BriefingMessageTests
     }
 
     /// <summary>
-    /// specs/briefing "The calendar could not be read" - an Unreadable calendar shows a notice
-    /// line (not a full section) so the user knows there may be events they are not seeing.
+    /// specs/briefing "Proveedor caído al construir el briefing" - the copy's events and one line
+    /// saying since when the calendar has not synced, in the user's local time.
     /// </summary>
     [Fact]
-    public void An_unreadable_calendar_shows_a_notice_line()
+    public void A_stale_calendar_shows_its_events_and_a_notice_line()
+    {
+        // 07:40 UTC is 09:40 in Madrid, today.
+        var lastSync = DateTime.UtcNow.Date.AddHours(7).AddMinutes(40);
+        var text = BriefingMessage.Text(
+            With(calendar: new BriefingCalendar.Events(
+                new BriefingSection<BriefingEvent>([Event("Demo con el cliente")], 1),
+                new BriefingCalendarNotice(lastSync, NeedsReconnect: false))),
+            Madrid)!;
+
+        Assert.Contains("<b>Hoy en tu calendario</b> (1)", text);
+        Assert.Contains("Demo con el cliente", text);
+        Assert.Contains($"📅 El calendario no se sincroniza desde las {UserClock.ToLocal(lastSync, Madrid):HH:mm}.", text);
+        Assert.DoesNotContain("Reconéctalo", text);
+    }
+
+    /// <summary>A notice from another day says the day too.</summary>
+    [Fact]
+    public void A_notice_from_another_day_says_the_day()
+    {
+        var notice = new BriefingCalendarNotice(new DateTime(2026, 9, 28, 16, 5, 0, DateTimeKind.Utc), NeedsReconnect: false);
+
+        Assert.Equal("El calendario no se sincroniza desde el 28 de septiembre a las 18:05.", BriefingMessage.NoticeLine(notice, Madrid));
+    }
+
+    /// <summary>specs/briefing "Conexión que necesita reconectarse".</summary>
+    [Fact]
+    public void A_calendar_that_needs_reconnect_says_so()
     {
         var text = BriefingMessage.Text(
             With(reminders: [Reminder("Llamar al banco")],
-                 calendar: new BriefingCalendar.Unreadable(NeedsReconnect: false)),
+                 calendar: new BriefingCalendar.Events(
+                     BriefingSection<BriefingEvent>.Empty, new BriefingCalendarNotice(null, NeedsReconnect: true))),
             Madrid)!;
 
-        Assert.Contains("📅 No se ha podido leer el calendario.", text);
+        Assert.Contains("📅 No se ha podido sincronizar el calendario. Reconéctalo en Configuración.", text);
         Assert.DoesNotContain("<b>Hoy en tu calendario</b>", text);
     }
 
-    /// <summary>
-    /// specs/briefing "Reconnect required" - when NeedsReconnect is true, the notice asks to
-    /// reconnect in Settings.
-    /// </summary>
+    /// <summary>specs/briefing "Eventos de trabajo y personales".</summary>
     [Fact]
-    public void An_unreadable_calendar_that_needs_reconnect_says_so()
+    public void Events_of_both_scopes_are_grouped_into_work_and_personal()
     {
         var text = BriefingMessage.Text(
-            With(reminders: [Reminder("Llamar al banco")],
-                 calendar: new BriefingCalendar.Unreadable(NeedsReconnect: true)),
+            With(events:
+            [
+                In(CalendarScope.Work, Event("Daily", startHourUtc: 7, endHourUtc: 8)),
+                In(CalendarScope.Personal, Event("Cena", startHourUtc: 18, endHourUtc: 19)),
+                In(CalendarScope.Work, Event("Revisión", startHourUtc: 9, endHourUtc: 10)),
+            ]),
             Madrid)!;
 
-        Assert.Contains("Reconéctalo en Configuración.", text);
+        var work = text.IndexOf("<i>Trabajo</i>", StringComparison.Ordinal);
+        var personal = text.IndexOf("<i>Personal</i>", StringComparison.Ordinal);
+        Assert.Contains("📅 <b>Hoy en tu calendario</b> (3)", text);
+        Assert.True(work >= 0 && personal > work);
+        Assert.InRange(text.IndexOf("Daily", StringComparison.Ordinal), work, personal);
+        Assert.InRange(text.IndexOf("Revisión", StringComparison.Ordinal), work, personal);
+        Assert.True(text.IndexOf("Cena", StringComparison.Ordinal) > personal);
     }
 
+    /// <summary>Events of one scope only are not grouped.</summary>
+    [Fact]
+    public void Events_of_one_scope_are_not_grouped()
+    {
+        var text = BriefingMessage.Text(
+            With(events: [In(CalendarScope.Work, Event("Daily")), In(CalendarScope.Work, Event("Revisión"))]), Madrid)!;
+
+        Assert.DoesNotContain("<i>Trabajo</i>", text);
+        Assert.DoesNotContain("<i>Personal</i>", text);
+    }
 
     [Fact]
     public void A_capped_event_section_states_its_total()

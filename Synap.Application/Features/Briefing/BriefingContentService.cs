@@ -16,6 +16,7 @@ public sealed class BriefingContentService
 {
     private readonly IBriefingReadRepository _briefingReadRepository;
     private readonly ICalendarReader _calendarReader;
+    private readonly ICalendarSynchronizer _calendarSynchronizer;
     private readonly IAiServiceClient _aiServiceClient;
     private readonly TimeSpan _calendarTimeout;
     private readonly TimeSpan _resurfacingTimeout;
@@ -23,12 +24,14 @@ public sealed class BriefingContentService
     public BriefingContentService(
         IBriefingReadRepository briefingReadRepository,
         ICalendarReader calendarReader,
+        ICalendarSynchronizer calendarSynchronizer,
         IAiServiceClient aiServiceClient,
         TimeSpan? calendarTimeout = null,
         TimeSpan? resurfacingTimeout = null)
     {
         _briefingReadRepository = briefingReadRepository;
         _calendarReader = calendarReader;
+        _calendarSynchronizer = calendarSynchronizer;
         _aiServiceClient = aiServiceClient;
         _calendarTimeout = calendarTimeout ?? TimeSpan.FromSeconds(10);
         _resurfacingTimeout = resurfacingTimeout ?? TimeSpan.FromSeconds(10);
@@ -137,40 +140,53 @@ public sealed class BriefingContentService
     }
 
     /// <summary>
-    /// The day's calendar state: <see cref="BriefingCalendar.NotConnected"/> when no calendar is
-    /// configured, <see cref="BriefingCalendar.Unreadable"/> when it could not be read (or timed
-    /// out), or <see cref="BriefingCalendar.Events"/> with the day's events.
-    /// A 10-second ceiling prevents a slow CalDAV server from delaying the rest of the briefing
-    /// (calendar-integration design.md Decision 9).
+    /// The day's events from the copy (calendar-store-and-view design.md Decisión 4): first a sync
+    /// of this user's calendars bounded by <see cref="_calendarTimeout"/>, so a slow CalDAV server
+    /// cannot hold up the briefing, and then the copy, which always answers. When the sync failed,
+    /// ran out of time, or the connection needs reconnecting, the events carry a notice with the
+    /// last sync that worked.
     /// </summary>
     private async Task<BriefingCalendar> EventsOfTheDayAsync(
         Guid userId, DateTime dayStartUtc, DateTime dayEndUtc, CancellationToken cancellationToken)
+    {
+        var syncFailed = !await TrySyncAsync(userId, cancellationToken);
+
+        var read = await _calendarReader.ListEventsAsync(userId, dayStartUtc, dayEndUtc, 50, cancellationToken: cancellationToken);
+        if (read is not CalendarReadResult.Ok(var all, var state))
+        {
+            return BriefingCalendar.Default;
+        }
+
+        var notice = syncFailed || state.IsStale
+            ? new BriefingCalendarNotice(state.LastSyncedAt, state.NeedsReconnect)
+            : null;
+
+        return all.Count == 0
+            ? new BriefingCalendar.Events(BriefingSection<BriefingEvent>.Empty, notice)
+            : new BriefingCalendar.Events(await BuildEventsSectionAsync(userId, all, cancellationToken), notice);
+    }
+
+    /// <summary>
+    /// False when the sync failed or did not finish in time. One already running (the periodic
+    /// one) is left to finish: the copy then says how up to date it is.
+    /// </summary>
+    private async Task<bool> TrySyncAsync(Guid userId, CancellationToken cancellationToken)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(_calendarTimeout);
         try
         {
-            var read = await _calendarReader.ListEventsAsync(userId, dayStartUtc, dayEndUtc, 50, cts.Token);
-
-            return read switch
-            {
-                CalendarReadResult.NotConnected => BriefingCalendar.Default,
-                CalendarReadResult.NeedsReconnect => new BriefingCalendar.Unreadable(NeedsReconnect: true),
-                CalendarReadResult.Unavailable => new BriefingCalendar.Unreadable(NeedsReconnect: false),
-                CalendarReadResult.Ok(var all) when all.Count == 0 =>
-                    new BriefingCalendar.Events(BriefingSection<BriefingEvent>.Empty),
-                CalendarReadResult.Ok(var all) => await BuildEventsSectionAsync(userId, all, cts.Token),
-                _ => BriefingCalendar.Default,
-            };
+            var outcome = await _calendarSynchronizer.SyncAsync(userId, cts.Token);
+            return outcome is not CalendarSyncOutcome.Failed;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            // Our own 10-second ceiling fired, not an external cancellation.
-            return new BriefingCalendar.Unreadable(NeedsReconnect: false);
+            // Our own ceiling fired, not an external cancellation.
+            return false;
         }
     }
 
-    private async Task<BriefingCalendar> BuildEventsSectionAsync(
+    private async Task<BriefingSection<BriefingEvent>> BuildEventsSectionAsync(
         Guid userId, IReadOnlyList<CalendarEvent> all, CancellationToken cancellationToken)
     {
         // Capped before the notes are looked for: a day with twenty events states its total and
@@ -187,7 +203,7 @@ public sealed class BriefingContentService
                 calendarEvent, await RelatedNotesAsync(userId, calendarEvent.Title, cancellationToken)));
         }
 
-        return new BriefingCalendar.Events(new BriefingSection<BriefingEvent>(events, all.Count));
+        return new BriefingSection<BriefingEvent>(events, all.Count);
     }
 
     /// <summary>

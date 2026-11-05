@@ -1,3 +1,4 @@
+using Synap.Application.Features.Calendar;
 using Synap.Application.Features.Briefing;
 using Synap.Domain;
 using Synap.Shared.Application.Interfaces;
@@ -17,9 +18,10 @@ public class BriefingContentServiceTests
 
     private readonly FakeBriefingReadRepository _repository = new();
     private readonly FakeCalendarReader _calendar = new();
+    private readonly FakeCalendarSynchronizer _sync = new();
     private readonly FakeAiServiceClient _ai = new();
 
-    private BriefingContentService Service() => new(_repository, _calendar, _ai);
+    private BriefingContentService Service() => new(_repository, _calendar, _sync, _ai);
 
     // ---- The local day ----
 
@@ -154,36 +156,83 @@ public class BriefingContentServiceTests
     }
 
     /// <summary>
-    /// specs/briefing "A day whose only calendar entry is an unreadable notice is empty" -
-    /// IsEmpty must not count the warning, only the events themselves.
+    /// specs/briefing "Solo el aviso" - IsEmpty must not count the notice, only the events themselves.
     /// </summary>
     [Fact]
-    public void A_content_with_only_an_unreadable_calendar_is_empty()
+    public void A_content_with_only_a_stale_calendar_notice_is_empty()
     {
         var content = BriefingContent.Empty with
         {
-            Calendar = new BriefingCalendar.Unreadable(NeedsReconnect: false),
+            Calendar = new BriefingCalendar.Events(
+                BriefingSection<BriefingEvent>.Empty, new BriefingCalendarNotice(DateTime.UtcNow.AddHours(-3), NeedsReconnect: false)),
         };
 
         Assert.True(content.IsEmpty);
-        // And with needs-reconnect it is still empty.
-        Assert.True((BriefingContent.Empty with { Calendar = new BriefingCalendar.Unreadable(true) }).IsEmpty);
+        Assert.Null(BriefingMessage.Text(content, Madrid));
+    }
+
+    /// <summary>calendar-store-and-view design.md Decisión 4 - the copy is synced before it is read.</summary>
+    [Fact]
+    public async Task The_calendar_is_synced_before_the_briefing_reads_it()
+    {
+        _calendar.Returns(Event("Dentista"));
+
+        var content = await Service().BuildAsync(Me, DateTime.UtcNow, Madrid);
+
+        Assert.Equal([Me], _sync.Synced);
+        var events = Assert.IsType<BriefingCalendar.Events>(content.Calendar);
+        Assert.Null(events.Notice);
+        // All the active calendars, not one scope.
+        Assert.Equal([null], _calendar.Scopes);
     }
 
     /// <summary>
-    /// calendar-integration design.md Decision 9 - a calendar that takes more than 10 seconds
-    /// yields Unreadable so it does not delay the rest of the briefing.
+    /// specs/briefing "Proveedor caído al construir el briefing" - a sync that does not finish in
+    /// time leaves the copy's events, with the notice, and does not delay the rest.
     /// </summary>
     [Fact]
-    public async Task A_calendar_that_times_out_gives_unreadable()
+    public async Task A_sync_that_times_out_builds_with_the_copy_and_a_notice()
     {
-        _calendar.HangForever();
-        var service = new BriefingContentService(_repository, _calendar, _ai, TimeSpan.FromMilliseconds(50));
+        var lastSync = DateTime.UtcNow.AddHours(-2);
+        _sync.HangForever();
+        _calendar.Stale(lastSync, false, Event("Comida con Marta"));
+        var service = new BriefingContentService(_repository, _calendar, _sync, _ai, TimeSpan.FromMilliseconds(50));
 
         var content = await service.BuildAsync(Me, DateTime.UtcNow, Madrid);
 
-        Assert.IsType<BriefingCalendar.Unreadable>(content.Calendar);
-        Assert.True(content.EventsToday.IsEmpty);
+        var events = Assert.IsType<BriefingCalendar.Events>(content.Calendar);
+        Assert.Equal("Comida con Marta", Assert.Single(events.Section.Items).Event.Title);
+        Assert.Equal(new BriefingCalendarNotice(lastSync, NeedsReconnect: false), events.Notice);
+    }
+
+    /// <summary>specs/briefing "Proveedor caído al construir el briefing".</summary>
+    [Fact]
+    public async Task A_failed_sync_builds_with_the_copy_and_a_notice()
+    {
+        var lastSync = DateTime.UtcNow.AddHours(-5);
+        _sync.Outcome = CalendarSyncOutcome.Failed;
+        _calendar.Stale(lastSync, false, Event("Dentista"));
+
+        var content = await Service().BuildAsync(Me, DateTime.UtcNow, Madrid);
+
+        var events = Assert.IsType<BriefingCalendar.Events>(content.Calendar);
+        Assert.Single(events.Section.Items);
+        Assert.Equal(lastSync, events.Notice!.LastSyncedAt);
+        Assert.False(content.IsEmpty);
+    }
+
+    /// <summary>specs/briefing "Conexión que necesita reconectarse".</summary>
+    [Fact]
+    public async Task A_connection_that_needs_reconnecting_builds_with_the_copy_and_says_so()
+    {
+        _sync.Outcome = CalendarSyncOutcome.NeedsReconnect;
+        _calendar.Stale(DateTime.UtcNow.AddDays(-1), needsReconnect: true, Event("Dentista"));
+
+        var content = await Service().BuildAsync(Me, DateTime.UtcNow, Madrid);
+
+        var events = Assert.IsType<BriefingCalendar.Events>(content.Calendar);
+        Assert.Single(events.Section.Items);
+        Assert.True(events.Notice!.NeedsReconnect);
     }
 
     /// <summary>design.md Decision 6 - the cutoff the service hands the query.</summary>
@@ -325,19 +374,21 @@ public class BriefingContentServiceTests
     }
 
     /// <summary>
-    /// specs/briefing "The calendar could not be read" - the rest of the briefing is built and
-    /// delivered, and the section is absent rather than saying the day is free.
+    /// specs/briefing "Solo el aviso" - with the sync failing and nothing on the copy today, the
+    /// rest of the briefing is built alone and the calendar adds only the notice.
     /// </summary>
     [Fact]
-    public async Task A_calendar_that_could_not_be_read_leaves_the_rest_of_the_briefing_alone()
+    public async Task A_failed_sync_with_no_events_today_leaves_the_rest_of_the_briefing_alone()
     {
-        _calendar.Unavailable();
+        _sync.Outcome = CalendarSyncOutcome.Failed;
+        _calendar.Stale(DateTime.UtcNow.AddHours(-1));
         _repository.Untagged = new BriefingSection<BriefingNote>(
             [new BriefingNote(Guid.NewGuid(), "Sin etiquetar", "algo")], 1);
 
         var content = await Service().BuildAsync(Me, DateTime.UtcNow, Madrid);
 
         Assert.True(content.EventsToday.IsEmpty);
+        Assert.NotNull(Assert.IsType<BriefingCalendar.Events>(content.Calendar).Notice);
         Assert.False(content.IsEmpty);
         Assert.Equal(1, content.UntaggedNotes.Total);
         Assert.Empty(_ai.SearchCalls);

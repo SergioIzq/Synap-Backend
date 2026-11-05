@@ -80,26 +80,63 @@ public static class BriefingMessage
     }
 
     /// <summary>
-    /// The calendar block: events section, one-line warning, or nothing.
-    /// <see cref="BriefingCalendar.NotConnected"/> → silent.
-    /// <see cref="BriefingCalendar.Events"/> (non-empty) → full section.
-    /// <see cref="BriefingCalendar.Unreadable"/> → a single notice line.
-    /// An empty <see cref="BriefingCalendar.Events"/> → silent (the day had no events).
+    /// The calendar block: the events section and, when the copy could not be brought up to date,
+    /// a single notice line (specs/briefing "Un calendario ilegible no detiene el briefing").
+    /// <see cref="BriefingCalendar.NotConnected"/> → silent. A day with no events and no notice → silent.
+    /// When the day has events of both scopes they are grouped into Trabajo and Personal
+    /// (specs/briefing "Eventos de trabajo y personales").
     /// </summary>
     private static void CalendarSection(StringBuilder text, BriefingCalendar calendar, string? timezone)
     {
-        switch (calendar)
+        if (calendar is not BriefingCalendar.Events(var section, var notice))
         {
-            case BriefingCalendar.Events e:
-                Section(text, "📅", "Hoy en tu calendario", e.Section, ev => EventLine(ev, timezone));
-                break;
-            case BriefingCalendar.Unreadable u:
-                var notice = u.NeedsReconnect
-                    ? "No se ha podido leer el calendario. Reconéctalo en Configuración."
-                    : "No se ha podido leer el calendario.";
-                text.Append($"\n\n📅 {Escape(notice)}");
-                break;
+            return;
         }
+
+        var items = section.Items;
+        if (items.Any(e => e.Event.Scope == CalendarScope.Work) && items.Any(e => e.Event.Scope == CalendarScope.Personal))
+        {
+            text.Append($"\n\n📅 <b>Hoy en tu calendario</b> ({section.Total})");
+            foreach (var (scope, heading) in new[] { (CalendarScope.Work, "Trabajo"), (CalendarScope.Personal, "Personal") })
+            {
+                text.Append($"\n<i>{heading}</i>");
+                foreach (var item in items.Where(e => e.Event.Scope == scope))
+                {
+                    text.Append($"\n· {EventLine(item, timezone)}");
+                }
+            }
+
+            if (section.IsTruncated)
+            {
+                text.Append($"\n<i>… y {section.Total - items.Count} más</i>");
+            }
+        }
+        else
+        {
+            Section(text, "📅", "Hoy en tu calendario", section, ev => EventLine(ev, timezone));
+        }
+
+        if (notice is not null)
+        {
+            text.Append($"\n\n📅 {Escape(NoticeLine(notice, timezone))}");
+        }
+    }
+
+    /// <summary>
+    /// "El calendario no se sincroniza desde las 07:40." - with the day too when it was not today,
+    /// and the reminder to reconnect when that is what it takes.
+    /// </summary>
+    internal static string NoticeLine(BriefingCalendarNotice notice, string? timezone)
+    {
+        var since = notice.LastSyncedAt switch
+        {
+            null => "No se ha podido sincronizar el calendario.",
+            { } at when UserClock.ToLocal(at, timezone).Date == UserClock.ToLocal(DateTime.UtcNow, timezone).Date =>
+                $"El calendario no se sincroniza desde las {Local(at, timezone)}.",
+            { } at => $"El calendario no se sincroniza desde el {UserClock.ToLocal(at, timezone).ToString("d 'de' MMMM 'a las' HH:mm", Spanish)}.",
+        };
+
+        return notice.NeedsReconnect ? $"{since} Reconéctalo en Configuración." : since;
     }
 
     /// <summary>

@@ -14,7 +14,8 @@ namespace Synap.UnitTests.Features.Assistant;
 
 /// <summary>
 /// calendar-integration tareas 1.13 y 1.14: la herramienta `get_calendar_events` (design.md
-/// Decisiones 6 y 10) y el `event_id` de `set_reminder` (Decisión 7).
+/// Decisiones 6 y 10) y el `event_id` de `set_reminder` (Decisión 7); calendar-store-and-view
+/// tarea 1.8: el ámbito y la copia que puede no estar al día.
 /// </summary>
 public class AgentCalendarToolTests
 {
@@ -78,11 +79,14 @@ public class AgentCalendarToolTests
     // ---- 1.13: la herramienta ----
 
     [Fact]
-    public void The_tool_takes_a_range_in_words_and_an_optional_query()
+    public void The_tool_takes_a_range_in_words_an_optional_query_and_an_optional_scope()
     {
         var tool = Assert.Single(AgentTools.All, t => t.Name == AgentTools.GetCalendarEvents);
 
-        Assert.Equal(["range", "query"], tool.Parameters.GetProperty("properties").EnumerateObject().Select(p => p.Name));
+        Assert.Equal(["range", "query", "scope"], tool.Parameters.GetProperty("properties").EnumerateObject().Select(p => p.Name));
+        Assert.Equal(
+            ["personal", "work"],
+            tool.Parameters.GetProperty("properties").GetProperty("scope").GetProperty("enum").EnumerateArray().Select(v => v.GetString()));
         Assert.Equal(["range"], tool.Parameters.GetProperty("required").EnumerateArray().Select(v => v.GetString()));
         Assert.DoesNotContain(AgentTools.All, t => t.Name != AgentTools.GetCalendarEvents && t.Name.Contains("event"));
     }
@@ -146,27 +150,78 @@ public class AgentCalendarToolTests
         Assert.DoesNotContain(outcome.Answer!.Actions, a => a.Type == AssistantActionType.CalendarRead);
     }
 
-    /// <summary>specs/ai-assistant "Conexión que necesita reconectarse".</summary>
+    /// <summary>specs/ai-assistant "Qué tengo de trabajo mañana": solo los calendarios de Trabajo.</summary>
     [Fact]
-    public async Task A_connection_that_needs_reconnecting_is_told_apart()
+    public async Task What_do_i_have_for_work_tomorrow_reads_only_work_calendars()
     {
-        _calendar.NeedsReconnect();
-        Script(Calls(Read(new { range = "mañana" })), Text("Tienes que reconectar el calendario en Configuración."));
+        var work = new CalendarEventSource(Guid.NewGuid(), "Oficina", "#3b82f6", CalendarScope.Work);
+        var personal = new CalendarEventSource(Guid.NewGuid(), "Casa", "#10b981", CalendarScope.Personal);
+        _calendar.Returns(
+            LocalEvent("Daily", 1, 9) with { Calendar = work },
+            LocalEvent("Gimnasio", 1, 19) with { Calendar = personal });
+        Script(Calls(Read(new { range = "mañana", scope = "work" })), Text("Mañana tienes la daily a las 09:00."));
 
-        await AskAsync();
+        await AskAsync("¿qué tengo de trabajo mañana?");
 
-        Assert.Equal("needs_reconnect", (string?)ToolResult(1)["status"]);
+        Assert.Equal([CalendarScope.Work], _calendar.Scopes);
+        var result = ToolResult(1);
+        Assert.Equal("work", (string?)result["scope"]);
+        var only = Assert.Single(result["events"]!.AsArray());
+        Assert.Equal("Daily", (string?)only!["title"]);
+        Assert.Equal("work", (string?)only["scope"]);
+        Assert.Equal("Oficina", (string?)only["calendar"]);
     }
 
+    /// <summary>Sin ámbito se leen los dos.</summary>
     [Fact]
-    public async Task An_unavailable_calendar_is_told_apart()
+    public async Task Without_a_scope_both_are_read()
     {
-        _calendar.Unavailable();
-        Script(Calls(Read(new { range = "mañana" })), Text("Ahora mismo no puedo leer tu calendario."));
+        _calendar.Returns(LocalEvent("Daily", 1, 9));
+        Script(Calls(Read(new { range = "mañana" })), Text("Mañana tienes la daily."));
 
         await AskAsync();
 
-        Assert.Equal("unavailable", (string?)ToolResult(1)["status"]);
+        Assert.Equal([null], _calendar.Scopes);
+        Assert.Equal("both", (string?)ToolResult(1)["scope"]);
+        Assert.Null(ToolResult(1)["copy"]);
+    }
+
+    /// <summary>
+    /// specs/ai-assistant "Conexión que necesita reconectarse": responde con la copia, desde
+    /// cuándo no se sincroniza y que la reconecte.
+    /// </summary>
+    [Fact]
+    public async Task A_connection_that_needs_reconnecting_answers_with_the_copy_and_its_age()
+    {
+        var lastSync = UserClock.ToUtc(UserClock.ToLocal(DateTime.UtcNow, Madrid).Date.AddDays(-1).AddHours(18).AddMinutes(5), Madrid);
+        _calendar.Stale(lastSync, needsReconnect: true, LocalEvent("Demo con el cliente", 1, 9, 30));
+        Script(Calls(Read(new { range = "mañana" })), Text("Mañana tienes la demo; reconecta el calendario en Configuración."));
+
+        await AskAsync();
+
+        var result = ToolResult(1);
+        Assert.Equal("ok", (string?)result["status"]);
+        Assert.Single(result["events"]!.AsArray());
+        Assert.True((bool?)result["copy"]!["stale"]);
+        Assert.True((bool?)result["copy"]!["needs_reconnect"]);
+        Assert.EndsWith("18:05", (string?)result["copy"]!["last_synced"]);
+        Assert.Contains("18:05", (string?)result["say"]);
+        Assert.Contains("Configuración", (string?)result["say"]);
+    }
+
+    /// <summary>Un servidor caído: la copia, con su antigüedad, y sin pedir reconectar.</summary>
+    [Fact]
+    public async Task A_failing_sync_answers_with_the_copy_and_its_age()
+    {
+        _calendar.Stale(DateTime.UtcNow.AddHours(-3), needsReconnect: false, LocalEvent("Revisión", 1, 10));
+        Script(Calls(Read(new { range = "mañana" })), Text("Mañana tienes una revisión."));
+
+        await AskAsync();
+
+        var result = ToolResult(1);
+        Assert.Equal("ok", (string?)result["status"]);
+        Assert.False((bool?)result["copy"]!["needs_reconnect"]);
+        Assert.DoesNotContain("Configuración", (string?)result["say"]);
     }
 
     /// <summary>design.md Decisión 10: los eventos son datos, y la descripción se recorta.</summary>
@@ -191,7 +246,8 @@ public class AgentCalendarToolTests
     {
         Assert.Contains("only read", AgentPrompt.Instructions);
         Assert.Contains("no_calendar", AgentPrompt.Instructions);
-        Assert.Contains("needs_reconnect", AgentPrompt.Instructions);
+        Assert.Contains("stale", AgentPrompt.Instructions);
+        Assert.Contains("scope \"work\"", AgentPrompt.Instructions);
     }
 
     [Fact]

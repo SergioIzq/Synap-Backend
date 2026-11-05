@@ -65,6 +65,9 @@ public sealed class ApiFixture : IAsyncLifetime
     /// <summary>Hace de servidor CalDAV al conectar (calendar-integration tarea 1.10).</summary>
     public ApiCalDavDiscoveryFake CalDav { get; } = new();
 
+    /// <summary>Hace de sincronización: conectar, "Sincronizar ahora" y el briefing no salen a la red.</summary>
+    public CalendarSynchronizerFake CalendarSync { get; } = new();
+
     public const string PublicBaseUrl = "http://localhost:4200";
 
     /// <summary>Everything the API logged, so tests can assert on records the response hides.</summary>
@@ -86,6 +89,8 @@ public sealed class ApiFixture : IAsyncLifetime
             builder.UseSetting("Telegram:BotToken", "test-bot-token");
             builder.UseSetting("Telegram:WebhookSecret", TelegramWebhookSecret);
             builder.UseSetting("Telegram:BotUsername", "SynapTestBot");
+            // Sin pasada periódica: los tests conectan servidores que no existen.
+            builder.UseSetting("CalendarSync:Enabled", "false");
             builder.ConfigureServices(services => services.AddSingleton<IStartupFilter, FakeRemoteIpStartupFilter>());
             builder.ConfigureTestServices(services =>
             {
@@ -99,6 +104,8 @@ public sealed class ApiFixture : IAsyncLifetime
                 services.AddSingleton<ICalendarReader>(CalendarEvents);
                 services.RemoveAll<ICalDavDiscovery>();
                 services.AddSingleton<ICalDavDiscovery>(CalDav);
+                services.RemoveAll<ICalendarSynchronizer>();
+                services.AddSingleton<ICalendarSynchronizer>(CalendarSync);
                 // No suppression window: the host is shared by the whole run, so a rejection
                 // recorded by one test would hide the next one's.
                 services.RemoveAll<WebhookRejectionRecorder>();

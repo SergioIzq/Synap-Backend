@@ -21,8 +21,8 @@ public sealed record BriefingNote(Guid Id, string? Title, string Content, int? P
 /// answer, and a feature that invents a connection is worse than one that shows none
 /// (specs/briefing "An event with no related notes").
 ///
-/// The event itself is not stored anywhere: it lives in this record for as long as it takes to
-/// render the briefing that read it (specs/calendar-integration "Calendar events are never stored").
+/// The event comes from Synap's copy of the calendar, with the calendar it belongs to, so the
+/// message can group work and personal events (calendar-store-and-view design.md Decisión 5).
 /// </summary>
 public sealed record BriefingEvent(CalendarEvent Event, IReadOnlyList<BriefingNote> RelatedNotes);
 
@@ -43,11 +43,12 @@ public sealed record BriefingSection<T>(IReadOnlyList<T> Items, int Total)
 }
 
 /// <summary>
-/// What the calendar contributed to today's briefing (calendar-integration design.md Decision 9).
-/// Three cases that the message renders differently: nothing was connected, something was connected
-/// but could not be read (with a flag for whether the user needs to reconnect), or the events
-/// themselves. <see cref="BriefingContent.IsEmpty"/> counts events but not an unreadable notice,
-/// so a day whose only entry is an unavailable calendar is still a day with nothing to report.
+/// What the calendar contributed to today's briefing (calendar-store-and-view design.md
+/// Decisión 5). Two cases: nothing was connected, or the day's events read from Synap's copy -
+/// which always answers, even when the server does not. When the copy may be out of date the
+/// events carry a <see cref="BriefingCalendarNotice"/>, and <see cref="BriefingContent.IsEmpty"/>
+/// counts the events but never the notice, so a day whose only entry is that notice is still a
+/// day with nothing to report (specs/briefing "Solo el aviso").
 /// </summary>
 public abstract record BriefingCalendar
 {
@@ -56,18 +57,19 @@ public abstract record BriefingCalendar
     /// <summary>No calendar connected. The briefing omits the calendar section silently.</summary>
     public sealed record NotConnected : BriefingCalendar;
 
-    /// <summary>
-    /// A calendar was connected but could not be read. The message shows a one-line notice.
-    /// <see cref="NeedsReconnect"/> is true when the connection itself expired and the user has to
-    /// reconnect in Settings (specs/briefing "Reconnect required").
-    /// </summary>
-    public sealed record Unreadable(bool NeedsReconnect) : BriefingCalendar;
-
-    /// <summary>The events for the day, possibly an empty section when the day has none.</summary>
-    public sealed record Events(BriefingSection<BriefingEvent> Section) : BriefingCalendar;
+    /// <summary>The events for the day, possibly an empty section, and the notice if the copy is stale.</summary>
+    public sealed record Events(BriefingSection<BriefingEvent> Section, BriefingCalendarNotice? Notice = null) : BriefingCalendar;
 
     public static readonly BriefingCalendar Default = new NotConnected();
 }
+
+/// <summary>
+/// The copy could not be brought up to date before the briefing: <see cref="LastSyncedAt"/> is the
+/// last sync that worked (null if none ever did), and <see cref="NeedsReconnect"/> is that the
+/// connection itself has to be reconnected in Settings (specs/briefing "Un calendario ilegible no
+/// detiene el briefing").
+/// </summary>
+public sealed record BriefingCalendarNotice(DateTime? LastSyncedAt, bool NeedsReconnect);
 
 /// <summary>
 /// Una nota dormida seleccionada para aparecer en el briefing (smart-resurfacing, Decisión 5).
@@ -101,8 +103,8 @@ public sealed record BriefingContent(
 
     /// <summary>
     /// The events of the local day as a plain section - the same view the message's calendar
-    /// section and existing tests use. Empty both when there are no events and when the calendar
-    /// was not connected or could not be read; use <see cref="Calendar"/> to tell those apart.
+    /// section and existing tests use. Empty both when there are no events and when no calendar
+    /// is connected; use <see cref="Calendar"/> to tell those apart.
     /// </summary>
     public BriefingSection<BriefingEvent> EventsToday =>
         Calendar is BriefingCalendar.Events e ? e.Section : BriefingSection<BriefingEvent>.Empty;
@@ -113,8 +115,7 @@ public sealed record BriefingContent(
     /// <summary>
     /// Nothing to report. The automatic briefing stays silent on such a day and resolves it
     /// anyway; one the user asked for still answers, saying so (specs/briefing).
-    /// An unreadable-calendar notice does not count as content
-    /// (specs/briefing "A day whose only entry is an unavailable calendar is empty").
+    /// A stale-calendar notice does not count as content (specs/briefing "Solo el aviso").
     /// </summary>
     public bool IsEmpty =>
         !HasEvents && RemindersToday.IsEmpty && InProgress.IsEmpty && Pending.IsEmpty

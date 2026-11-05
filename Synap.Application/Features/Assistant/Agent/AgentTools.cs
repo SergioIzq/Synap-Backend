@@ -97,7 +97,8 @@ internal static class AgentTools
             """
             {"type": "object", "additionalProperties": false, "required": ["range"], "properties": {
               "range": {"type": "string", "description": "The period in the user's own words and nothing else: \"hoy\", \"mañana\", \"el viernes\", \"esta semana\", \"la semana que viene\", \"este mes\", \"próximos 30 días\". Do not work out dates yourself. To find the next occurrence of something, use \"próximos 30 días\" with a query."},
-              "query": {"type": "string", "description": "Optional words that must appear in the event title, e.g. \"sprint\" or \"dentista\"."}
+              "query": {"type": "string", "description": "Optional words that must appear in the event title, e.g. \"sprint\" or \"dentista\"."},
+              "scope": {"type": "string", "enum": ["personal", "work"], "description": "Only when the user asks about work (work) or about their personal life (personal). Leave it out to read both."}
             }}
             """),
     ];

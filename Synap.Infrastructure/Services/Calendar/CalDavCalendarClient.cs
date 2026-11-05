@@ -1,5 +1,3 @@
-using Ical.Net;
-using Ical.Net.DataTypes;
 using Microsoft.Extensions.Logging;
 using Synap.Application.Features.Calendar;
 using Synap.Domain;
@@ -8,29 +6,32 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Xml;
 using System.Xml.Linq;
-// Ical.Net tiene su propio CalendarEvent; el nuestro es el del dominio, así que el suyo es un VEVENT.
-using VEvent = Ical.Net.CalendarComponents.CalendarEvent;
 
 namespace Synap.Infrastructure.Services.Calendar;
 
 /// <summary>
-/// Lee un calendario CalDAV y lo descubre al conectar (calendar-integration design.md Decisión 4).
-/// Las peticiones son nuestras porque son pocas y fijas (PROPFIND y un REPORT); el iCalendar lo
-/// parsea Ical.Net, que también expande en local las recurrencias si el servidor ignora `expand`.
+/// El cliente CalDAV: descubre el home al conectar y hace las lecturas de la sincronización
+/// (calendar-store-and-view design.md Decisión 3). Las peticiones son nuestras porque son pocas y
+/// fijas (PROPFIND y tres REPORT); el iCalendar se guarda tal cual y lo lee Ical.Net después.
 ///
-/// La defensa contra SSRF está en el handler del <see cref="HttpClient"/> (design.md Decisión 5).
-/// Aquí se exige HTTPS, no se siguen redirecciones a otro host y se limita el tamaño de las
-/// respuestas.
+/// La defensa contra SSRF está en el handler del <see cref="HttpClient"/> (calendar-integration
+/// design.md Decisión 5). Aquí se exige HTTPS, no se siguen redirecciones a otro host y se limita
+/// el tamaño de cada respuesta. Nunca se registra ni se devuelve el cuerpo de una respuesta.
 /// </summary>
-public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDiscovery
+public sealed class CalDavCalendarClient : ICalDavSyncClient, ICalDavDiscovery
 {
-    /// <summary>Tamaño máximo de una respuesta; un calendario de un mes cabe de sobra.</summary>
+    /// <summary>Tamaño máximo de una respuesta; un lote de multiget cabe de sobra.</summary>
     public const int MaxResponseBytes = 4 * 1024 * 1024;
+
+    /// <summary>Recursos por `calendar-multiget`. Un lote demasiado grande se parte en dos.</summary>
+    public const int MultigetBatchSize = 50;
 
     private const int MaxRedirects = 3;
 
     private static readonly XNamespace Dav = "DAV:";
     private static readonly XNamespace CalDav = "urn:ietf:params:xml:ns:caldav";
+    private static readonly XNamespace CalendarServer = "http://calendarserver.org/ns/";
+    private static readonly XNamespace Apple = "http://apple.com/ns/ical/";
     private static readonly HttpMethod Propfind = new("PROPFIND");
     private static readonly HttpMethod Report = new("REPORT");
 
@@ -43,171 +44,215 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
         _logger = logger;
     }
 
-    public CalendarProvider Provider => CalendarProvider.CalDav;
+    // ---- Colecciones del home ----
 
-    // ---- Lectura ----
+    private static readonly XName[] CalendarListProps =
+    [
+        Dav + "resourcetype", Dav + "displayname", Apple + "calendar-color", CalendarServer + "getctag",
+        Dav + "supported-report-set", CalDav + "supported-calendar-component-set",
+    ];
 
-    public async Task<CalendarProviderRead> ReadAsync(CalendarProviderRequest request, CancellationToken cancellationToken)
+    public async Task<CalDavResult<IReadOnlyList<RemoteCalendar>>> ListCalendarsAsync(
+        Uri home, CalendarCredentials.CalDav credentials, CancellationToken cancellationToken)
     {
-        if (request.Credentials is not CalendarCredentials.CalDav credentials)
+        var answer = await PropfindAsync(home, credentials, CalendarListProps, depth: "1", cancellationToken);
+        if (answer is not Answer.Ok ok)
         {
-            return new CalendarProviderRead(new CalendarReadResult.Unavailable("credenciales de otro proveedor"));
+            return NotOk<IReadOnlyList<RemoteCalendar>>(answer);
         }
 
-        if (!Uri.TryCreate(request.CalendarRef, UriKind.Absolute, out var calendarUrl))
+        if (TryParseXml(ok.Body) is null)
         {
-            return new CalendarProviderRead(new CalendarReadResult.Unavailable("URL de calendario no válida"));
+            return Invalid<IReadOnlyList<RemoteCalendar>>("lista de calendarios no es XML");
         }
 
-        var answer = await SendAsync(
-            Report, calendarUrl, credentials, CalendarQuery(request.FromUtc, request.ToUtc), depth: "1", cancellationToken);
+        var calendars = Responses(ok)
+            .Where(r => IsEventCalendar(r.Element))
+            .Select(r => new RemoteCalendar(
+                r.Href.AbsoluteUri,
+                Prop(r.Element, Dav + "displayname"),
+                Prop(r.Element, Apple + "calendar-color"),
+                Prop(r.Element, CalendarServer + "getctag"),
+                SupportsSyncCollection(r.Element),
+                SameCollection(r.Href, ok.Url)))
+            .ToList();
 
-        CalendarReadResult result = answer switch
+        return new CalDavResult<IReadOnlyList<RemoteCalendar>>.Ok(calendars);
+    }
+
+    private static bool SupportsSyncCollection(XElement response) =>
+        OkProps(response)
+            .Select(p => p.Element(Dav + "supported-report-set"))
+            .OfType<XElement>()
+            .Any(set => set.Descendants(Dav + "sync-collection").Any());
+
+    // ---- sync-collection ----
+
+    public async Task<CalDavResult<SyncCollectionChanges>> SyncCollectionAsync(
+        Uri calendar, CalendarCredentials.CalDav credentials, string? syncToken, CancellationToken cancellationToken)
+    {
+        var body = new XElement(
+            Dav + "sync-collection",
+            new XAttribute(XNamespace.Xmlns + "d", Dav),
+            new XElement(Dav + "sync-token", syncToken ?? string.Empty),
+            new XElement(Dav + "sync-level", "1"),
+            new XElement(Dav + "prop", new XElement(Dav + "getetag"))).ToString();
+
+        // RFC 6578, 3.2: el informe solo se define con `Depth: 0`.
+        var answer = await SendAsync(Report, calendar, credentials, body, depth: "0", cancellationToken);
+        if (answer is not Answer.Ok ok)
         {
-            Answer.Rejected => new CalendarReadResult.NeedsReconnect(),
-            Answer.Failed failed => new CalendarReadResult.Unavailable(failed.Cause),
-            Answer.Ok ok => ParseEvents(ok.Body, credentials.Username, request),
-            _ => new CalendarReadResult.Unavailable("respuesta inesperada"),
-        };
+            return NotOk<SyncCollectionChanges>(answer);
+        }
 
-        return new CalendarProviderRead(result);
+        if (TryParseXml(ok.Body) is not { } document)
+        {
+            return Invalid<SyncCollectionChanges>("sync-collection no es XML");
+        }
+
+        var changed = new List<RemoteETag>();
+        var removed = new List<string>();
+        var truncated = false;
+
+        foreach (var response in Responses(ok))
+        {
+            var status = (string?)response.Element.Element(Dav + "status");
+            if (SameCollection(response.Href, ok.Url))
+            {
+                // `507` sobre la propia colección: el servidor cortó la lista (RFC 6578, 3.6).
+                truncated |= status?.Contains(" 507 ", StringComparison.Ordinal) ?? false;
+                continue;
+            }
+
+            if (status?.Contains(" 404 ", StringComparison.Ordinal) ?? false)
+            {
+                removed.Add(response.Href.AbsoluteUri);
+                continue;
+            }
+
+            if (!IsCollection(response.Element))
+            {
+                changed.Add(new RemoteETag(response.Href.AbsoluteUri, Prop(response.Element, Dav + "getetag")));
+            }
+        }
+
+        var token = document.Root?.Element(Dav + "sync-token")?.Value?.Trim();
+        return new CalDavResult<SyncCollectionChanges>.Ok(
+            new SyncCollectionChanges(changed, removed, string.IsNullOrEmpty(token) ? null : token, truncated));
+    }
+
+    // ---- calendar-multiget ----
+
+    public async Task<CalDavResult<MultigetResult>> MultigetAsync(
+        Uri calendar, CalendarCredentials.CalDav credentials, IReadOnlyList<string> hrefs, CancellationToken cancellationToken)
+    {
+        var resources = new List<RemoteResource>();
+        var missing = new List<string>();
+
+        foreach (var batch in hrefs.Chunk(MultigetBatchSize))
+        {
+            var result = await MultigetBatchAsync(calendar, credentials, batch, cancellationToken);
+            if (result is not CalDavResult<MultigetResult>.Ok ok)
+            {
+                return result;
+            }
+
+            resources.AddRange(ok.Value.Resources);
+            missing.AddRange(ok.Value.Missing);
+        }
+
+        return new CalDavResult<MultigetResult>.Ok(new MultigetResult(resources, missing));
     }
 
     /// <summary>
-    /// `calendar-query` con `time-range` y `expand`, para que el servidor devuelva las ocurrencias
-    /// de las recurrencias en lugar de la regla.
+    /// Un lote. Si la respuesta pasa del tamaño máximo se parte en dos; un único recurso que no
+    /// cabe se omite, contado en el registro, para que no impida copiar el resto del calendario.
     /// </summary>
-    private static string CalendarQuery(DateTime fromUtc, DateTime toUtc)
+    private async Task<CalDavResult<MultigetResult>> MultigetBatchAsync(
+        Uri calendar, CalendarCredentials.CalDav credentials, IReadOnlyList<string> hrefs, CancellationToken cancellationToken)
     {
-        var range = new[] { new XAttribute("start", Stamp(fromUtc)), new XAttribute("end", Stamp(toUtc)) };
-
-        return new XElement(
-            CalDav + "calendar-query",
+        var body = new XElement(
+            CalDav + "calendar-multiget",
             new XAttribute(XNamespace.Xmlns + "d", Dav),
             new XAttribute(XNamespace.Xmlns + "c", CalDav),
-            new XElement(
-                Dav + "prop",
-                new XElement(CalDav + "calendar-data", new XElement(CalDav + "expand", range))),
-            new XElement(
-                CalDav + "filter",
-                new XElement(
-                    CalDav + "comp-filter",
-                    new XAttribute("name", "VCALENDAR"),
-                    new XElement(
-                        CalDav + "comp-filter",
-                        new XAttribute("name", "VEVENT"),
-                        new XElement(CalDav + "time-range", range.Select(a => new XAttribute(a))))))).ToString();
-    }
+            new XElement(Dav + "prop", new XElement(Dav + "getetag"), new XElement(CalDav + "calendar-data")),
+            hrefs.Select(h => new XElement(Dav + "href", PathOf(h)))).ToString();
 
-    private CalendarReadResult ParseEvents(string multiStatus, string username, CalendarProviderRequest request)
-    {
-        if (TryParseXml(multiStatus) is not { } document)
+        var answer = await SendAsync(Report, calendar, credentials, body, depth: "1", cancellationToken);
+
+        if (answer is Answer.TooLarge)
         {
-            return new CalendarReadResult.Unavailable("respuesta CalDAV no es XML");
+            if (hrefs.Count == 1)
+            {
+                _logger.LogWarning("Un recurso CalDAV supera el tamaño máximo y se omite");
+                return new CalDavResult<MultigetResult>.Ok(new MultigetResult([], []));
+            }
+
+            var half = hrefs.Count / 2;
+            var first = await MultigetBatchAsync(calendar, credentials, hrefs.Take(half).ToList(), cancellationToken);
+            if (first is not CalDavResult<MultigetResult>.Ok a)
+            {
+                return first;
+            }
+
+            var second = await MultigetBatchAsync(calendar, credentials, hrefs.Skip(half).ToList(), cancellationToken);
+            return second is CalDavResult<MultigetResult>.Ok b
+                ? new CalDavResult<MultigetResult>.Ok(new MultigetResult(
+                    [.. a.Value.Resources, .. b.Value.Resources], [.. a.Value.Missing, .. b.Value.Missing]))
+                : second;
         }
 
-        var events = new List<CalendarEvent>();
-        var unparseable = 0;
-
-        foreach (var data in document.Descendants(CalDav + "calendar-data"))
+        if (answer is not Answer.Ok ok)
         {
-            if (string.IsNullOrWhiteSpace(data.Value))
+            return NotOk<MultigetResult>(answer);
+        }
+
+        if (TryParseXml(ok.Body) is null)
+        {
+            return Invalid<MultigetResult>("multiget no es XML");
+        }
+
+        var resources = new List<RemoteResource>();
+        var missing = new List<string>();
+        foreach (var response in Responses(ok))
+        {
+            var ics = Prop(response.Element, CalDav + "calendar-data", trim: false);
+            if (string.IsNullOrWhiteSpace(ics))
             {
+                // Sin datos: un `404`, o un recurso que el servidor no sabe servir.
+                missing.Add(response.Href.AbsoluteUri);
                 continue;
             }
 
-            try
-            {
-                events.AddRange(Occurrences(data.Value, username, request.FromUtc, request.ToUtc));
-            }
-            catch (Exception exception) when (exception is not OutOfMemoryException)
-            {
-                // Un elemento ilegible no cuesta el resto de eventos.
-                unparseable++;
-            }
+            resources.Add(new RemoteResource(response.Href.AbsoluteUri, Prop(response.Element, Dav + "getetag"), ics));
         }
 
-        if (unparseable > 0)
-        {
-            _logger.LogWarning("{Count} elementos CalDAV no se pudieron leer y se omitieron", unparseable);
-        }
-
-        return new CalendarReadResult.Ok(
-            [.. events.OrderBy(e => e.StartUtc).ThenBy(e => e.EndUtc).Take(request.MaxEvents)]);
+        return new CalDavResult<MultigetResult>.Ok(new MultigetResult(resources, missing));
     }
 
-    /// <summary>
-    /// Las ocurrencias de un objeto iCalendar dentro del intervalo. Si el servidor ya expandió,
-    /// cada VEVENT es una ocurrencia; si no, Ical.Net expande la regla (con sus excepciones y
-    /// ocurrencias movidas) en local.
-    /// </summary>
-    internal static IEnumerable<CalendarEvent> Occurrences(string iCalendar, string username, DateTime fromUtc, DateTime toUtc)
+    // ---- ETags ----
+
+    public async Task<CalDavResult<IReadOnlyList<RemoteETag>>> ListETagsAsync(
+        Uri calendar, CalendarCredentials.CalDav credentials, CancellationToken cancellationToken)
     {
-        var calendar = Ical.Net.Calendar.Load(iCalendar);
-        if (calendar is null)
+        var answer = await PropfindAsync(
+            calendar, credentials, [Dav + "resourcetype", Dav + "getetag"], depth: "1", cancellationToken);
+        if (answer is not Answer.Ok ok)
         {
-            yield break;
+            return NotOk<IReadOnlyList<RemoteETag>>(answer);
         }
 
-        var occurrences = calendar
-            .GetOccurrences<VEvent>(new CalDateTime(DateTime.SpecifyKind(fromUtc, DateTimeKind.Utc)), null)
-            .TakeWhileBefore(new CalDateTime(DateTime.SpecifyKind(toUtc, DateTimeKind.Utc)));
-
-        foreach (var occurrence in occurrences)
+        if (TryParseXml(ok.Body) is null)
         {
-            if (occurrence.Source is not VEvent source || IsCancelled(source) || DeclinedBy(source, username))
-            {
-                continue;
-            }
-
-            var mapped = Map(source, occurrence.Period);
-            if (mapped is not null && mapped.StartUtc < toUtc && mapped.EndUtc > fromUtc)
-            {
-                yield return mapped;
-            }
-        }
-    }
-
-    private static bool IsCancelled(VEvent source) =>
-        string.Equals(source.Status, "CANCELLED", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Rechazado por el propio usuario: un ATTENDEE con su dirección y `PARTSTAT=DECLINED`. Si el
-    /// usuario no coincide con ningún asistente, el evento se muestra (design.md, Riesgos).
-    /// </summary>
-    private static bool DeclinedBy(VEvent source, string username) =>
-        source.Attendees.Any(a =>
-            string.Equals(a.ParticipationStatus, "DECLINED", StringComparison.OrdinalIgnoreCase)
-            && a.Value is { } address
-            && string.Equals(StripMailto(address.OriginalString), username.Trim(), StringComparison.OrdinalIgnoreCase));
-
-    private static string StripMailto(string address) =>
-        address.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase) ? address[7..].Trim() : address.Trim();
-
-    private static CalendarEvent? Map(VEvent source, Period period)
-    {
-        var start = period.StartTime;
-        if (start is null)
-        {
-            return null;
+            return Invalid<IReadOnlyList<RemoteETag>>("lista de ETags no es XML");
         }
 
-        var title = string.IsNullOrWhiteSpace(source.Summary) ? "(sin título)" : source.Summary.Trim();
-        var location = string.IsNullOrWhiteSpace(source.Location) ? null : source.Location.Trim();
-        var description = string.IsNullOrWhiteSpace(source.Description) ? null : source.Description.Trim();
-        var end = period.EffectiveEndTime;
+        var etags = Responses(ok)
+            .Where(r => !SameCollection(r.Href, ok.Url) && !IsCollection(r.Element))
+            .Select(r => new RemoteETag(r.Href.AbsoluteUri, Prop(r.Element, Dav + "getetag")))
+            .ToList();
 
-        // `VALUE=DATE`: el día anotado, sin zona horaria.
-        if (!start.HasTime)
-        {
-            var days = end is { HasTime: false } ? end.Date.DayNumber - start.Date.DayNumber : 1;
-            return CalendarEvent.AllDay(title, start.Date, days, location, description);
-        }
-
-        var startUtc = DateTime.SpecifyKind(start.AsUtc, DateTimeKind.Utc);
-        var endUtc = end is { HasTime: true } ? DateTime.SpecifyKind(end.AsUtc, DateTimeKind.Utc) : startUtc;
-
-        return new CalendarEvent(title, startUtc, endUtc, null, location, description);
+        return new CalDavResult<IReadOnlyList<RemoteETag>>.Ok(etags);
     }
 
     // ---- Descubrimiento ----
@@ -217,7 +262,7 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
     {
         var credentials = new CalendarCredentials.CalDav(username, password);
 
-        // 1. La URL dada puede ser ya la colección.
+        // 1. La URL dada puede ser ya el home o un calendario, que dicen quién es su principal.
         var first = await PropfindAsync(url, credentials, CollectionProps, depth: "0", cancellationToken);
         if (first is Answer.Rejected)
         {
@@ -226,12 +271,22 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
 
         if (first is Answer.Ok ok && Responses(ok).FirstOrDefault() is { } self)
         {
+            var principalFromUrl = Href(self.Element, Dav + "current-user-principal", self.Href);
+
             if (IsEventCalendar(self.Element))
             {
+                // Un calendario: se sube a su home si el servidor deja; si no, el calendario hace
+                // de home de uno solo.
+                if (principalFromUrl is not null
+                    && await FromPrincipalAsync(principalFromUrl, credentials, cancellationToken) is CalDavDiscoveryResult.Found home)
+                {
+                    return home;
+                }
+
                 return new CalDavDiscoveryResult.Found(self.Href.AbsoluteUri);
             }
 
-            if (Href(self.Element, Dav + "current-user-principal", self.Href) is { } principalFromUrl)
+            if (principalFromUrl is not null)
             {
                 return await FromPrincipalAsync(principalFromUrl, credentials, cancellationToken);
             }
@@ -255,14 +310,14 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
 
         // Si la URL dada ni siquiera respondió, es el servidor el que no está; si respondió, es
         // que no hay calendario que encontrar.
-        return first is Answer.Failed failed
-            ? new CalDavDiscoveryResult.Unreachable(failed.Cause)
+        return first is Answer.Failed or Answer.TooLarge
+            ? new CalDavDiscoveryResult.Unreachable(first is Answer.Failed failed ? failed.Cause : "CalDAV: respuesta demasiado grande")
             : new CalDavDiscoveryResult.NoCalendar();
     }
 
     /// <summary>
-    /// 3. Del principal, `calendar-home-set`; el calendario por defecto si el servidor lo expone o,
-    /// si no, la primera colección que admite VEVENT.
+    /// 3. Del principal, `calendar-home-set`, siempre que en el home haya al menos un calendario
+    /// que admita VEVENT.
     /// </summary>
     private async Task<CalDavDiscoveryResult> FromPrincipalAsync(
         Uri principal, CalendarCredentials.CalDav credentials, CancellationToken cancellationToken)
@@ -274,32 +329,23 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
                 return new CalDavDiscoveryResult.CredentialsRejected();
             case Answer.Failed failed:
                 return new CalDavDiscoveryResult.Unreachable(failed.Cause);
+            case not Answer.Ok:
+                return new CalDavDiscoveryResult.NoCalendar();
         }
 
         var principalResponse = Responses((Answer.Ok)answer).FirstOrDefault();
-        if (principalResponse is null)
+        if (principalResponse is null
+            || Href(principalResponse.Element, CalDav + "calendar-home-set", principalResponse.Href) is not { } home)
         {
             return new CalDavDiscoveryResult.NoCalendar();
         }
 
-        if (Href(principalResponse.Element, CalDav + "schedule-default-calendar-URL", principalResponse.Href) is { } byDefault)
-        {
-            return new CalDavDiscoveryResult.Found(byDefault.AbsoluteUri);
-        }
-
-        if (Href(principalResponse.Element, CalDav + "calendar-home-set", principalResponse.Href) is not { } home)
-        {
-            return new CalDavDiscoveryResult.NoCalendar();
-        }
-
-        var collections = await PropfindAsync(home, credentials, CollectionProps, depth: "1", cancellationToken);
+        var collections = await ListCalendarsAsync(home, credentials, cancellationToken);
         return collections switch
         {
-            Answer.Rejected => new CalDavDiscoveryResult.CredentialsRejected(),
-            Answer.Failed failed => new CalDavDiscoveryResult.Unreachable(failed.Cause),
-            Answer.Ok ok => Responses(ok).FirstOrDefault(r => IsEventCalendar(r.Element)) is { } calendar
-                ? new CalDavDiscoveryResult.Found(calendar.Href.AbsoluteUri)
-                : new CalDavDiscoveryResult.NoCalendar(),
+            CalDavResult<IReadOnlyList<RemoteCalendar>>.Rejected => new CalDavDiscoveryResult.CredentialsRejected(),
+            CalDavResult<IReadOnlyList<RemoteCalendar>>.Failed failed => new CalDavDiscoveryResult.Unreachable(failed.Cause),
+            CalDavResult<IReadOnlyList<RemoteCalendar>>.Ok { Value.Count: > 0 } => new CalDavDiscoveryResult.Found(home.AbsoluteUri),
             _ => new CalDavDiscoveryResult.NoCalendar(),
         };
     }
@@ -309,8 +355,9 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
 
     private static readonly XName[] PrincipalProps = [Dav + "current-user-principal"];
 
-    private static readonly XName[] HomeProps =
-        [CalDav + "calendar-home-set", CalDav + "schedule-default-calendar-URL"];
+    private static readonly XName[] HomeProps = [CalDav + "calendar-home-set"];
+
+    // ---- XML ----
 
     private Task<Answer> PropfindAsync(
         Uri url, CalendarCredentials.CalDav credentials, XName[] props, string depth, CancellationToken cancellationToken)
@@ -319,6 +366,8 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
             Dav + "propfind",
             new XAttribute(XNamespace.Xmlns + "d", Dav),
             new XAttribute(XNamespace.Xmlns + "c", CalDav),
+            new XAttribute(XNamespace.Xmlns + "cs", CalendarServer),
+            new XAttribute(XNamespace.Xmlns + "ical", Apple),
             new XElement(Dav + "prop", props.Select(p => new XElement(p)))).ToString();
 
         return SendAsync(Propfind, url, credentials, body, depth, cancellationToken);
@@ -346,6 +395,9 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
                 string.Equals((string?)c.Attribute("name"), "VEVENT", StringComparison.OrdinalIgnoreCase));
     }
 
+    private static bool IsCollection(XElement response) =>
+        OkProps(response).Any(p => p.Element(Dav + "resourcetype")?.Element(Dav + "collection") is not null);
+
     /// <summary>Las propiedades de los `propstat` con estado 200.</summary>
     private static IEnumerable<XElement> OkProps(XElement response) =>
         response.Elements(Dav + "propstat")
@@ -353,12 +405,32 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
             .Select(ps => ps.Element(Dav + "prop"))
             .OfType<XElement>();
 
+    /// <summary>El texto de una propiedad con estado 200, o null si falta o está vacía.</summary>
+    private static string? Prop(XElement response, XName property, bool trim = true)
+    {
+        var value = OkProps(response).Select(p => p.Element(property)?.Value).FirstOrDefault(v => v is not null);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return trim ? value.Trim() : value;
+    }
+
     /// <summary>El `href` dentro de la propiedad, resuelto contra la URL de la respuesta.</summary>
     private static Uri? Href(XElement response, XName property, Uri baseUri)
     {
         var href = OkProps(response).Select(p => p.Element(property)?.Element(Dav + "href")?.Value).FirstOrDefault(h => h is not null);
         return string.IsNullOrWhiteSpace(href) || !Uri.TryCreate(baseUri, href.Trim(), out var resolved) ? null : resolved;
     }
+
+    /// <summary>La misma colección, con o sin barra final.</summary>
+    private static bool SameCollection(Uri a, Uri b) =>
+        string.Equals(a.AbsoluteUri.TrimEnd('/'), b.AbsoluteUri.TrimEnd('/'), StringComparison.Ordinal);
+
+    /// <summary>Lo que se manda en un `href`: la ruta, ya codificada.</summary>
+    private static string PathOf(string href) =>
+        Uri.TryCreate(href, UriKind.Absolute, out var absolute) ? absolute.AbsolutePath : href;
 
     private sealed record DavResponse(Uri Href, XElement Element);
 
@@ -379,6 +451,18 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
         }
     }
 
+    private static XDocument? TryParseXml(string text)
+    {
+        try
+        {
+            return XDocument.Parse(text);
+        }
+        catch (XmlException)
+        {
+            return null;
+        }
+    }
+
     // ---- HTTP ----
 
     private abstract record Answer
@@ -387,8 +471,24 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
 
         public sealed record Rejected : Answer;
 
-        public sealed record Failed(string Cause) : Answer;
+        public sealed record TokenInvalid : Answer;
+
+        public sealed record TooLarge : Answer;
+
+        public sealed record Failed(string Category, string Cause) : Answer;
     }
+
+    private static CalDavResult<T> NotOk<T>(Answer answer) => answer switch
+    {
+        Answer.Rejected => new CalDavResult<T>.Rejected(),
+        Answer.TokenInvalid => new CalDavResult<T>.TokenInvalid(),
+        Answer.TooLarge => new CalDavResult<T>.Failed(CalendarSyncErrors.InvalidResponse, "CalDAV: respuesta demasiado grande"),
+        Answer.Failed failed => new CalDavResult<T>.Failed(failed.Category, failed.Cause),
+        _ => new CalDavResult<T>.Failed(CalendarSyncErrors.InvalidResponse, "CalDAV: respuesta inesperada"),
+    };
+
+    private static CalDavResult<T> Invalid<T>(string cause) =>
+        new CalDavResult<T>.Failed(CalendarSyncErrors.InvalidResponse, $"CalDAV: {cause}");
 
     /// <summary>
     /// Envía la petición siguiendo como mucho <see cref="MaxRedirects"/> redirecciones, solo dentro
@@ -407,7 +507,7 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
             {
                 if (current.Scheme != Uri.UriSchemeHttps)
                 {
-                    return new Answer.Failed("CalDAV sin HTTPS");
+                    return new Answer.Failed(CalendarSyncErrors.Unreachable, "CalDAV sin HTTPS");
                 }
 
                 using var request = new HttpRequestMessage(method, current)
@@ -424,17 +524,26 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
                 {
                     if (response.Headers.Location is not { } location)
                     {
-                        return new Answer.Failed($"CalDAV: HTTP {(int)response.StatusCode} sin Location");
+                        return new Answer.Failed(CalendarSyncErrors.ServerError, $"CalDAV: HTTP {(int)response.StatusCode} sin Location");
                     }
 
                     var next = location.IsAbsoluteUri ? location : new Uri(current, location);
                     if (!string.Equals(next.Host, current.Host, StringComparison.OrdinalIgnoreCase))
                     {
-                        return new Answer.Failed("CalDAV: redirección a otro host");
+                        return new Answer.Failed(CalendarSyncErrors.ServerError, "CalDAV: redirección a otro host");
                     }
 
                     current = next;
                     continue;
+                }
+
+                // Un token caducado llega como `403` o `409` con la precondición `valid-sync-token`
+                // (RFC 6578, 3.2); solo se mira si está, sin guardar ni registrar el cuerpo.
+                if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Conflict
+                    && await ReadLimitedAsync(response, cancellationToken) is { } error
+                    && error.Contains("valid-sync-token", StringComparison.Ordinal))
+                {
+                    return new Answer.TokenInvalid();
                 }
 
                 if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -444,25 +553,23 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    return new Answer.Failed($"CalDAV: HTTP {(int)response.StatusCode}");
+                    return new Answer.Failed(CalendarSyncErrors.ServerError, $"CalDAV: HTTP {(int)response.StatusCode}");
                 }
 
                 var text = await ReadLimitedAsync(response, cancellationToken);
-                return text is null
-                    ? new Answer.Failed("CalDAV: respuesta demasiado grande")
-                    : new Answer.Ok(current, text);
+                return text is null ? new Answer.TooLarge() : new Answer.Ok(current, text);
             }
 
-            return new Answer.Failed("CalDAV: demasiadas redirecciones");
+            return new Answer.Failed(CalendarSyncErrors.ServerError, "CalDAV: demasiadas redirecciones");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return new Answer.Failed("CalDAV no respondió a tiempo");
+            return new Answer.Failed(CalendarSyncErrors.Unreachable, "CalDAV no respondió a tiempo");
         }
         catch (HttpRequestException exception)
         {
             // El tipo de fallo y nunca el mensaje, que puede llevar la dirección.
-            return new Answer.Failed($"CalDAV inalcanzable ({exception.HttpRequestError})");
+            return new Answer.Failed(CalendarSyncErrors.Unreachable, $"CalDAV inalcanzable ({exception.HttpRequestError})");
         }
     }
 
@@ -491,20 +598,4 @@ public sealed class CalDavCalendarClient : ICalendarProviderClient, ICalDavDisco
 
         return Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
     }
-
-    private static XDocument? TryParseXml(string text)
-    {
-        try
-        {
-            return XDocument.Parse(text);
-        }
-        catch (XmlException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>El formato básico de iCalendar que usa `time-range`: 20261007T000000Z.</summary>
-    private static string Stamp(DateTime utc) =>
-        DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToString("yyyyMMdd'T'HHmmss'Z'", System.Globalization.CultureInfo.InvariantCulture);
 }

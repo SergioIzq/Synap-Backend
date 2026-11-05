@@ -32,7 +32,7 @@ public class BriefingDeliveryServiceTests
     private BriefingDeliveryService Service() => new(
         _users,
         new BriefingDispatcher(
-            new BriefingContentService(_content, new FakeCalendarReader(), new FakeAiServiceClient()),
+            new BriefingContentService(_content, new FakeCalendarReader(), new FakeCalendarSynchronizer(), new FakeAiServiceClient()),
             _telegram,
             new FakeNoteRepository(),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<BriefingDispatcher>.Instance),

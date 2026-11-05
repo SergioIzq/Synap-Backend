@@ -22,6 +22,81 @@ namespace Synap.Infrastructure.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Synap.Domain.Calendar", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CTag")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("ctag");
+
+                    b.Property<string>("Color")
+                        .HasMaxLength(7)
+                        .HasColumnType("character varying(7)")
+                        .HasColumnName("color");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("display_name");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<DateTime>("FechaCreacion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Href")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("href");
+
+                    b.Property<string>("LastSyncError")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("last_sync_error");
+
+                    b.Property<DateTime?>("LastSyncedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("last_synced_at");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("scope");
+
+                    b.Property<string>("ServerColor")
+                        .HasMaxLength(7)
+                        .HasColumnType("character varying(7)")
+                        .HasColumnName("server_color");
+
+                    b.Property<string>("SyncToken")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("sync_token");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Href")
+                        .IsUnique()
+                        .HasDatabaseName("ux_calendars_user_href");
+
+                    b.ToTable("calendars", (string)null);
+                });
+
             modelBuilder.Entity("Synap.Domain.CalendarConnection", b =>
                 {
                     b.Property<Guid>("Id")
@@ -67,6 +142,80 @@ namespace Synap.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("calendar_connections", (string)null);
+                });
+
+            modelBuilder.Entity("Synap.Domain.CalendarEventResource", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("AllDay")
+                        .HasColumnType("boolean")
+                        .HasColumnName("all_day");
+
+                    b.Property<Guid>("CalendarId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("calendar_id");
+
+                    b.Property<string>("ETag")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("etag");
+
+                    b.Property<DateTime?>("EndsAtUtc")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("ends_at_utc");
+
+                    b.Property<DateTime>("FechaCreacion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Href")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("href");
+
+                    b.Property<string>("Ics")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("ics");
+
+                    b.Property<bool>("IsRecurring")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_recurring");
+
+                    b.Property<DateTime>("StartsAtUtc")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("starts_at_utc");
+
+                    b.Property<string>("Summary")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)")
+                        .HasColumnName("summary");
+
+                    b.Property<string>("Uid")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)")
+                        .HasColumnName("uid");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CalendarId", "Href")
+                        .IsUnique()
+                        .HasDatabaseName("ux_calendar_events_calendar_href");
+
+                    b.HasIndex("UserId", "StartsAtUtc")
+                        .HasDatabaseName("idx_calendar_events_user_starts");
+
+                    b.ToTable("calendar_events", (string)null);
                 });
 
             modelBuilder.Entity("Synap.Domain.MemoryEntry", b =>
@@ -380,11 +529,29 @@ namespace Synap.Infrastructure.Persistence.Migrations
                     b.ToTable("note_tags", (string)null);
                 });
 
+            modelBuilder.Entity("Synap.Domain.Calendar", b =>
+                {
+                    b.HasOne("Synap.Domain.CalendarConnection", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Synap.Domain.CalendarConnection", b =>
                 {
                     b.HasOne("Synap.Domain.User", null)
                         .WithOne()
                         .HasForeignKey("Synap.Domain.CalendarConnection", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Synap.Domain.CalendarEventResource", b =>
+                {
+                    b.HasOne("Synap.Domain.Calendar", null)
+                        .WithMany()
+                        .HasForeignKey("CalendarId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

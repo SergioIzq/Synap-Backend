@@ -1,9 +1,9 @@
 namespace Synap.Application.Features.Calendar;
 
 /// <summary>
-/// Comprueba unas credenciales CalDAV y localiza el calendario principal antes de guardar nada
-/// (calendar-integration design.md Decisión 4; specs/calendar-integration "Conectar un calendario
-/// CalDAV").
+/// Comprueba unas credenciales CalDAV y localiza el `calendar-home-set` de la cuenta antes de
+/// guardar nada (calendar-store-and-view design.md Decisión 2; specs/calendar-integration
+/// "Conectar un calendario CalDAV"). La sincronización lee del home todos sus calendarios.
 /// </summary>
 public interface ICalDavDiscovery
 {
@@ -18,8 +18,11 @@ public abstract record CalDavDiscoveryResult
     {
     }
 
-    /// <summary>La URL de la colección que se leerá a partir de ahora.</summary>
-    public sealed record Found(string CalendarUrl) : CalDavDiscoveryResult;
+    /// <summary>
+    /// La URL del home, con al menos un calendario de eventos. Si el servidor no deja llegar al
+    /// home, es la del propio calendario, que se lista igual que un home de uno solo.
+    /// </summary>
+    public sealed record Found(string HomeUrl) : CalDavDiscoveryResult;
 
     public sealed record CredentialsRejected : CalDavDiscoveryResult;
 

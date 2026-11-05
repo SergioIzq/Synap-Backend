@@ -99,6 +99,16 @@ public sealed class CalendarConnection : AbsEntity<UserId>
     }
 
     /// <summary>
+    /// Una conexión anterior a calendar-store-and-view guardaba un calendario; la primera
+    /// sincronización la apunta a su home (design.md Decisión 2).
+    /// </summary>
+    public void PointTo(string calendarRef)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(calendarRef);
+        CalendarRef = calendarRef.Trim();
+    }
+
+    /// <summary>
     /// Marca la conexión para reconectar. Si ya estaba marcada, conserva el primer momento: es
     /// "desde cuándo" no funciona, y Configuración lo muestra así.
     /// </summary>

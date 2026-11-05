@@ -19,12 +19,14 @@ public sealed record CalendarConnectionStatus(
     string Account,
     DateTime ConnectedAt,
     bool NeedsReconnect,
-    DateTime? NeedsReconnectSince)
+    DateTime? NeedsReconnectSince,
+    DateTime? LastSyncedAt)
 {
     public static CalendarConnectionStatus From(CalendarConnectionSummary summary) => new(
         "caldav",
         summary.AccountLabel,
         summary.ConnectedAt,
         summary.NeedsReconnectSince is not null,
-        summary.NeedsReconnectSince);
+        summary.NeedsReconnectSince,
+        summary.LastSyncedAt);
 }

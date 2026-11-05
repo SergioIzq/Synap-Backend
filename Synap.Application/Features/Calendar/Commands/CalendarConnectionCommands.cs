@@ -5,13 +5,18 @@ using SergioIzq.Domain.Kernel.Abstractions.Results;
 using SergioIzq.Domain.Kernel.Interfaces;
 using Synap.Domain;
 using Synap.Shared.Application;
+using Synap.Shared.Application.BackgroundJobs;
 
 namespace Synap.Application.Features.Calendar.Commands;
 
 /// <summary>
 /// Conecta un calendario CalDAV (specs/calendar-integration "Conectar un calendario CalDAV"): la
 /// URL tiene que ser HTTPS y, antes de guardar nada, se comprueban las credenciales y se localiza
-/// el calendario. Si algo falla, la conexión anterior queda como estaba.
+/// el home de la cuenta. Si algo falla, la conexión anterior queda como estaba.
+///
+/// Conectar otra cuenta u otro home borra los calendarios copiados de la anterior; volver a
+/// conectar la misma (una reconexión) los conserva con sus preferencias. En ambos casos se encola
+/// la primera sincronización (calendar-store-and-view design.md Decisión 4).
 /// </summary>
 public sealed record ConnectCalDavCalendarCommand(string? Url, string? Username, string? Password)
     : ICommand<CalendarSettingsResponse>;
@@ -25,6 +30,8 @@ public sealed class ConnectCalDavCalendarCommandHandler
     private readonly IUserContext _userContext;
     private readonly ICalDavDiscovery _discovery;
     private readonly CalendarCredentialsProtector _protector;
+    private readonly ICalendarStore _calendars;
+    private readonly IBackgroundJobQueue _jobs;
     private readonly ILogger<ConnectCalDavCalendarCommandHandler> _logger;
 
     public ConnectCalDavCalendarCommandHandler(
@@ -34,6 +41,8 @@ public sealed class ConnectCalDavCalendarCommandHandler
         IUserContext userContext,
         ICalDavDiscovery discovery,
         CalendarCredentialsProtector protector,
+        ICalendarStore calendars,
+        IBackgroundJobQueue jobs,
         ILogger<ConnectCalDavCalendarCommandHandler> logger)
     {
         _connections = connections;
@@ -42,6 +51,8 @@ public sealed class ConnectCalDavCalendarCommandHandler
         _userContext = userContext;
         _discovery = discovery;
         _protector = protector;
+        _calendars = calendars;
+        _jobs = jobs;
         _logger = logger;
     }
 
@@ -80,17 +91,27 @@ public sealed class ConnectCalDavCalendarCommandHandler
                 return Result.Failure<CalendarSettingsResponse>(CalendarErrors.NoCalendar);
         }
 
-        var calendarUrl = ((CalDavDiscoveryResult.Found)discovered).CalendarUrl;
+        var homeUrl = ((CalDavDiscoveryResult.Found)discovered).HomeUrl;
+
+        // Otra cuenta u otro home: la copia anterior no es de esta conexión (specs "Reemplazo de la conexión").
+        var previous = await _connectionView.GetSummaryAsync(userId, cancellationToken);
+        if (previous is not null && (previous.AccountLabel != username || previous.CalendarRef != homeUrl))
+        {
+            await _calendars.DeleteAllAsync(userId, cancellationToken);
+        }
+
         await CalendarConnections.ReplaceAsync(
             _connections,
             userId,
             CalendarProvider.CalDav,
             username,
-            calendarUrl,
+            homeUrl,
             _protector.Protect(new CalendarCredentials.CalDav(username, password)),
             DateTime.UtcNow,
             cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        CalendarSyncJobs.Enqueue(_jobs, userId);
 
         return Result.Success(CalendarSettingsResponse.From(
             await _connectionView.GetSummaryAsync(userId, cancellationToken)));

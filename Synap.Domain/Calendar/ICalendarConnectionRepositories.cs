@@ -20,8 +20,14 @@ public interface ICalendarConnectionReadRepository
     Task<CalendarConnectionSummary?> GetSummaryAsync(Guid userId, CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// <see cref="CalendarRef"/> es el home CalDAV, que no es secreto. <see cref="LastSyncedAt"/> es la
+/// última sincronización correcta del calendario activo más atrasado; null si aún no hay ninguna.
+/// </summary>
 public sealed record CalendarConnectionSummary(
     CalendarProvider Provider,
     string AccountLabel,
     DateTime ConnectedAt,
-    DateTime? NeedsReconnectSince);
+    DateTime? NeedsReconnectSince,
+    string CalendarRef = "",
+    DateTime? LastSyncedAt = null);

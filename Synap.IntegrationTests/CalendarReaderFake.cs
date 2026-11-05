@@ -1,10 +1,11 @@
 using Synap.Application.Features.Calendar;
 using Synap.Domain;
+using System.Collections.Concurrent;
 
 namespace Synap.IntegrationTests;
 
 /// <summary>
-/// Hace de calendario conectado en los tests que no pasan por un proveedor. Por defecto no hay
+/// Hace de copia del calendario en los tests que no pasan por un servidor. Por defecto no hay
 /// calendario, que es lo que esperan los tests del briefing escritos antes de calendar-integration.
 /// </summary>
 public sealed class CalendarReaderFake : ICalendarReader
@@ -20,16 +21,35 @@ public sealed class CalendarReaderFake : ICalendarReader
         ReadFor.Clear();
     }
 
-    public void Returns(params CalendarEvent[] events) => Result = new CalendarReadResult.Ok(events);
+    public void Returns(params CalendarEvent[] events) =>
+        Result = new CalendarReadResult.Ok(events, CalendarCopyState.Fresh(DateTime.UtcNow));
 
-    public void Unavailable() => Result = new CalendarReadResult.Unavailable("en un test");
-
-    public void NeedsReconnect() => Result = new CalendarReadResult.NeedsReconnect();
+    /// <summary>Una copia que no se pudo poner al día.</summary>
+    public void Stale(DateTime? lastSyncedAt, bool needsReconnect = false, params CalendarEvent[] events) =>
+        Result = new CalendarReadResult.Ok(events, new CalendarCopyState(lastSyncedAt, needsReconnect, SyncFailing: !needsReconnect));
 
     public Task<CalendarReadResult> ListEventsAsync(
-        Guid userId, DateTime fromUtc, DateTime toUtc, int maxEvents, CancellationToken cancellationToken = default)
+        Guid userId, DateTime fromUtc, DateTime toUtc, int maxEvents, CalendarScope? scope = null,
+        CancellationToken cancellationToken = default)
     {
         ReadFor.Add(userId);
         return Task.FromResult(Result);
+    }
+}
+
+/// <summary>
+/// Hace de sincronización en el host de pruebas: nada sale a la red. Responde
+/// <see cref="Outcome"/> y recuerda para quién se pidió.
+/// </summary>
+public sealed class CalendarSynchronizerFake : ICalendarSynchronizer
+{
+    public CalendarSyncOutcome Outcome { get; set; } = CalendarSyncOutcome.Synced;
+
+    public ConcurrentBag<Guid> SyncedFor { get; } = [];
+
+    public Task<CalendarSyncOutcome> SyncAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        SyncedFor.Add(userId);
+        return Task.FromResult(Outcome);
     }
 }

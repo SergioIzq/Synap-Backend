@@ -32,20 +32,3 @@ internal sealed class FakeCalendarConnectionRepository : ICalendarConnectionWrit
 
     public void Delete(CalendarConnection entity) => Connections.Remove(entity.UserId.Value);
 }
-
-/// <summary>Un adaptador que responde lo que el test le diga y recuerda lo que se le pidió.</summary>
-internal sealed class FakeProviderClient(CalendarProvider provider) : ICalendarProviderClient
-{
-    public CalendarProvider Provider { get; } = provider;
-
-    public Func<CalendarProviderRequest, CalendarProviderRead> Responder { get; set; } =
-        _ => new CalendarProviderRead(new CalendarReadResult.Ok([]));
-
-    public List<CalendarProviderRequest> Requests { get; } = [];
-
-    public Task<CalendarProviderRead> ReadAsync(CalendarProviderRequest request, CancellationToken cancellationToken)
-    {
-        Requests.Add(request);
-        return Task.FromResult(Responder(request));
-    }
-}

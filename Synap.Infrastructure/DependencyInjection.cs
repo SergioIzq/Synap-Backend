@@ -114,9 +114,18 @@ public static class DependencyInjection
         services.AddSingleton<CalDavNetworkGuard>();
         services.AddHttpClient<CalDavCalendarClient>(client => client.Timeout = TimeSpan.FromSeconds(15))
             .ConfigurePrimaryHttpMessageHandler(sp => sp.GetRequiredService<CalDavNetworkGuard>().CreateHandler());
-        services.AddTransient<ICalendarProviderClient>(sp => sp.GetRequiredService<CalDavCalendarClient>());
+        services.AddTransient<ICalDavSyncClient>(sp => sp.GetRequiredService<CalDavCalendarClient>());
         services.AddTransient<ICalDavDiscovery>(sp => sp.GetRequiredService<CalDavCalendarClient>());
         services.AddScoped<ICalendarReader, CalendarReader>();
+
+        // La copia de los calendarios (calendar-store-and-view design.md Decisiones 3 y 4).
+        services.AddScoped<ICalendarStore, Persistence.Data.Calendar.CalendarStore>();
+        services.AddSingleton<ICalendarSyncLock, PostgresCalendarSyncLock>();
+        services.AddScoped<ICalendarSynchronizer, CalendarSynchronizer>();
+        services.Configure<CalendarSyncSettings>(configuration.GetSection(CalendarSyncSettings.SectionName));
+        services.AddSingleton<CalendarSyncSweep>();
+        services.AddHostedService<CalendarSyncHostedService>();
+        services.AddSingleton<IManualSyncRateLimit, InMemoryManualSyncRateLimit>();
 
         services.AddHttpClient<ITelegramSender, TelegramSender>(client =>
         {

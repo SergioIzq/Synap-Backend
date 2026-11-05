@@ -1,117 +1,119 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using SergioIzq.Domain.Kernel.Interfaces;
 using Synap.Application.Features.Calendar;
 using Synap.Domain;
+using Synap.Infrastructure.Persistence.Command;
+using Synap.Shared.Domain.ValueObjects.Ids;
+using StoredCalendar = Synap.Domain.Calendar;
 
 namespace Synap.Infrastructure.Services.Calendar;
 
 /// <summary>
-/// El despachador de <see cref="ICalendarReader"/> (calendar-integration design.md Decisión 1):
-/// carga la conexión del usuario, descifra sus credenciales y delega en el adaptador de su
-/// proveedor. También es quien guarda lo que la lectura cambia: el access token renovado y la marca
-/// de reconexión.
+/// <see cref="ICalendarReader"/> sobre la copia (calendar-store-and-view design.md Decisión 5):
+/// 1. elige en SQL los candidatos del intervalo en los calendarios activos del usuario: los que no
+///    se repiten y se solapan, y los recurrentes que empezaron antes del final y no terminaron
+///    antes del principio;
+/// 2. expande cada uno con Ical.Net en la zona del usuario (<see cref="IcsOccurrences"/>).
 ///
-/// Los registros llevan solo usuario, proveedor, estado y causa (design.md Decisión 10).
+/// Nunca contacta con el servidor. Los registros llevan solo ids y recuentos.
 /// </summary>
 public sealed class CalendarReader : ICalendarReader
 {
-    private readonly ICalendarConnectionWriteRepository _connections;
-    private readonly IUnitOfWork _unitOfWork;
-    private readonly CalendarCredentialsProtector _credentialsProtector;
-    private readonly IEnumerable<ICalendarProviderClient> _clients;
+    /// <summary>Recursos que se leen como mucho en una consulta, antes de expandir.</summary>
+    public const int MaxCandidates = 2000;
+
+    private readonly SynapDbContext _context;
     private readonly ILogger<CalendarReader> _logger;
 
-    public CalendarReader(
-        ICalendarConnectionWriteRepository connections,
-        IUnitOfWork unitOfWork,
-        CalendarCredentialsProtector credentialsProtector,
-        IEnumerable<ICalendarProviderClient> clients,
-        ILogger<CalendarReader> logger)
+    public CalendarReader(SynapDbContext context, ILogger<CalendarReader> logger)
     {
-        _connections = connections;
-        _unitOfWork = unitOfWork;
-        _credentialsProtector = credentialsProtector;
-        _clients = clients;
+        _context = context;
         _logger = logger;
     }
 
     public async Task<CalendarReadResult> ListEventsAsync(
-        Guid userId, DateTime fromUtc, DateTime toUtc, int maxEvents, CancellationToken cancellationToken = default)
+        Guid userId,
+        DateTime fromUtc,
+        DateTime toUtc,
+        int maxEvents,
+        CalendarScope? scope = null,
+        CancellationToken cancellationToken = default)
     {
-        var connection = await _connections.GetByIdAsync(userId, cancellationToken);
+        var user = UserId.CreateFromDatabase(userId);
+
+        var connection = await _context.Set<CalendarConnection>()
+            .AsNoTracking()
+            .Where(c => c.Id == user)
+            .Select(c => new { c.AccountLabel, c.NeedsReconnectSince })
+            .FirstOrDefaultAsync(cancellationToken);
+
         if (connection is null)
         {
             return new CalendarReadResult.NotConnected();
         }
 
-        // Una conexión marcada no se vuelve a intentar: solo la quita reconectar
-        // (specs/calendar-integration "Reconexión").
-        if (connection.NeedsReconnect)
+        var timezone = await _context.Set<User>()
+            .AsNoTracking()
+            .Where(u => u.Id == user)
+            .Select(u => u.Timezone)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var calendars = await _context.Set<StoredCalendar>()
+            .AsNoTracking()
+            .Where(c => c.UserId == user && c.Enabled)
+            .ToListAsync(cancellationToken);
+
+        var state = new CalendarCopyState(
+            calendars.Where(c => c.LastSyncedAt is not null).Min(c => c.LastSyncedAt),
+            connection.NeedsReconnectSince is not null,
+            calendars.Any(c => c.LastSyncError is not null));
+
+        var shown = calendars.Where(c => scope is null || c.Scope == scope).ToDictionary(c => c.Id);
+        if (shown.Count == 0 || maxEvents <= 0 || toUtc <= fromUtc)
         {
-            return new CalendarReadResult.NeedsReconnect();
+            return new CalendarReadResult.Ok([], state);
         }
 
-        var credentials = _credentialsProtector.TryRead(connection.Provider, connection.CredentialsEncrypted);
-        if (credentials is null)
+        // Un día de margen: los eventos de todo el día y las horas flotantes se guardan sin zona.
+        var from = DateTime.SpecifyKind(fromUtc.AddDays(-1), DateTimeKind.Utc);
+        var to = DateTime.SpecifyKind(toUtc.AddDays(1), DateTimeKind.Utc);
+        var ids = shown.Keys.ToList();
+
+        var candidates = await _context.Set<CalendarEventResource>()
+            .AsNoTracking()
+            .Where(e => e.UserId == user && ids.Contains(e.CalendarId) && e.StartsAtUtc < to)
+            .Where(e => e.EndsAtUtc == null ? e.IsRecurring || e.StartsAtUtc >= from : e.EndsAtUtc >= from)
+            .OrderBy(e => e.StartsAtUtc)
+            .Take(MaxCandidates)
+            .Select(e => new { e.CalendarId, e.Ics })
+            .ToListAsync(cancellationToken);
+
+        var events = new List<CalendarEvent>();
+        var unreadable = 0;
+        foreach (var candidate in candidates)
         {
-            // Normalmente, la clave maestra cambió. Igual que con la key de Groq: hay que reconectar.
-            return await MarkNeedsReconnectAsync(connection, "credenciales ilegibles", cancellationToken);
+            var calendar = shown[candidate.CalendarId];
+            var source = new CalendarEventSource(calendar.Id.Value, calendar.DisplayName, calendar.EffectiveColor, calendar.Scope);
+
+            try
+            {
+                events.AddRange(IcsOccurrences
+                    .Expand(candidate.Ics, connection.AccountLabel, timezone, fromUtc, toUtc)
+                    .Select(e => e with { Calendar = source }));
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                // Un recurso ilegible no cuesta el resto de eventos.
+                unreadable++;
+            }
         }
 
-        var client = _clients.FirstOrDefault(c => c.Provider == connection.Provider);
-        if (client is null)
+        if (unreadable > 0)
         {
-            return Unavailable(connection, "proveedor sin adaptador");
+            _logger.LogWarning("{Count} eventos de la copia de {UserId} no se pudieron leer", unreadable, userId);
         }
 
-        CalendarProviderRead read;
-        try
-        {
-            read = await client.ReadAsync(
-                new CalendarProviderRequest(userId, connection.CalendarRef, credentials, fromUtc, toUtc, maxEvents),
-                cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
-        {
-            // Un adaptador no debería lanzar; si lo hace, se registra el tipo y nunca el mensaje,
-            // que podría llevar contenido de la respuesta.
-            return Unavailable(connection, exception.GetType().Name);
-        }
-
-        if (read.RenewedCredentials is { } renewed)
-        {
-            connection.ReplaceCredentials(_credentialsProtector.Protect(renewed));
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
-        }
-
-        return read.Result switch
-        {
-            CalendarReadResult.NeedsReconnect => await MarkNeedsReconnectAsync(connection, "acceso rechazado", cancellationToken),
-            CalendarReadResult.Unavailable unavailable => Unavailable(connection, unavailable.Cause),
-            CalendarReadResult.Ok ok => new CalendarReadResult.Ok(
-                [.. ok.Events.OrderBy(e => e.StartUtc).ThenBy(e => e.EndUtc).Take(Math.Max(0, maxEvents))]),
-            var other => other,
-        };
-    }
-
-    private async Task<CalendarReadResult> MarkNeedsReconnectAsync(
-        CalendarConnection connection, string cause, CancellationToken cancellationToken)
-    {
-        _logger.LogWarning(
-            "Calendario de {UserId} ({Provider}) marcado para reconectar: {Cause}",
-            connection.UserId.Value, connection.Provider, cause);
-
-        connection.MarkNeedsReconnect(DateTime.UtcNow);
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
-        return new CalendarReadResult.NeedsReconnect();
-    }
-
-    private CalendarReadResult.Unavailable Unavailable(CalendarConnection connection, string cause)
-    {
-        _logger.LogWarning(
-            "Calendario de {UserId} ({Provider}) no disponible: {Cause}",
-            connection.UserId.Value, connection.Provider, cause);
-
-        return new CalendarReadResult.Unavailable(cause);
+        return new CalendarReadResult.Ok(
+            [.. events.OrderBy(e => e.StartUtc).ThenBy(e => e.EndUtc).Take(maxEvents)], state);
     }
 }
